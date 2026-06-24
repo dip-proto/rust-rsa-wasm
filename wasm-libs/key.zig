@@ -36,23 +36,13 @@ pub fn Key(comptime N: usize) type {
             dq_hex: []const u8,
             qinv_hex: []const u8,
         ) !Self {
-            const p = try hexToFe(p_hex);
-            const q = try hexToFe(q_hex);
-            const p_rr = computeRR(&p);
-            const q_rr = computeRR(&q);
-            const qinv = try hexToFe(qinv_hex);
-            return .{
-                .p = p,
-                .q = q,
-                .p_exp = try hexToFe(dp_hex),
-                .q_exp = try hexToFe(dq_hex),
-                .p_n0inv = negInv64(p[0]),
-                .q_n0inv = negInv64(q[0]),
-                .p_rr = p_rr,
-                .q_rr = q_rr,
-                // qinv * R mod p = montMul(qinv, R^2) since montMul folds in one R^-1.
-                .qinv_mont = B.montMul(&qinv, &p_rr, &p, negInv64(p[0])),
-            };
+            return init(
+                try hexToFe(p_hex),
+                try hexToFe(q_hex),
+                try hexToFe(dp_hex),
+                try hexToFe(dq_hex),
+                try hexToFe(qinv_hex),
+            );
         }
 
         // Same as fromHex but the components arrive as raw big-endian bytes, which
@@ -64,72 +54,45 @@ pub fn Key(comptime N: usize) type {
             dq_be: []const u8,
             qinv_be: []const u8,
         ) !Self {
-            const p = try bytesToFe(p_be);
-            const q = try bytesToFe(q_be);
-            const p_rr = computeRR(&p);
-            const q_rr = computeRR(&q);
-            const qinv = try bytesToFe(qinv_be);
+            return init(
+                try bytesToFe(p_be),
+                try bytesToFe(q_be),
+                try bytesToFe(dp_be),
+                try bytesToFe(dq_be),
+                try bytesToFe(qinv_be),
+            );
+        }
+
+        // Derive the Montgomery constants once, from the parsed CRT components.
+        fn init(p: Fe, q: Fe, dp: Fe, dq: Fe, qinv: Fe) Self {
+            const p_rr = B.rSquared(&p);
+            const p_n0inv = negInv64(p[0]);
             return .{
                 .p = p,
                 .q = q,
-                .p_exp = try bytesToFe(dp_be),
-                .q_exp = try bytesToFe(dq_be),
-                .p_n0inv = negInv64(p[0]),
+                .p_exp = dp,
+                .q_exp = dq,
+                .p_n0inv = p_n0inv,
                 .q_n0inv = negInv64(q[0]),
                 .p_rr = p_rr,
-                .q_rr = q_rr,
-                .qinv_mont = B.montMul(&qinv, &p_rr, &p, negInv64(p[0])),
+                .q_rr = B.rSquared(&q),
+                // qinv * R mod p = montMul(qinv, R^2) since montMul folds in one R^-1.
+                .qinv_mont = B.montMul(&qinv, &p_rr, &p, p_n0inv),
             };
         }
 
         // Big-endian bytes (up to N limbs) into little-endian 64-bit limbs.
         fn bytesToFe(be: []const u8) !Fe {
             if (be.len > 8 * N) return error.KeyTooLong;
-            var bytes: [8 * N]u8 = @splat(0);
-            @memcpy(bytes[8 * N - be.len ..], be);
-            var fe: Fe = @splat(0);
-            for (0..N) |i| {
-                fe[i] = std.mem.readInt(u64, bytes[8 * N - 8 * (i + 1) ..][0..8], .big);
-            }
-            return fe;
+            return B.fromBytesBE(be);
         }
 
         // Big-endian hex (up to N limbs) into little-endian 64-bit limbs.
         fn hexToFe(hex: []const u8) !Fe {
             if (hex.len > 2 * 8 * N) return error.KeyTooLong;
-            var bytes: [8 * N]u8 = @splat(0);
-            // Right-align the value so short (leading-zero-trimmed) hex still lands in
-            // the low end of the big-endian buffer.
-            const nbytes = hex.len / 2;
-            _ = try std.fmt.hexToBytes(bytes[8 * N - nbytes ..], hex);
-            var fe: Fe = @splat(0);
-            for (0..N) |i| {
-                fe[i] = std.mem.readInt(u64, bytes[8 * N - 8 * (i + 1) ..][0..8], .big);
-            }
-            return fe;
-        }
-
-        // R^2 mod m with R = 2^(64*N): start at 1 and double mod m 2*64*N times.
-        fn computeRR(m: *const Fe) Fe {
-            var acc: Fe = @splat(0);
-            acc[0] = 1;
-            for (0..2 * 64 * N) |_| {
-                var carry: u64 = 0;
-                for (0..N) |i| {
-                    const nc = acc[i] >> 63;
-                    acc[i] = (acc[i] << 1) | carry;
-                    carry = nc;
-                }
-                if (carry != 0 or B.geq(&acc, m)) {
-                    var borrow: u128 = 0;
-                    for (0..N) |i| {
-                        const d = @as(u128, acc[i]) -% @as(u128, m[i]) -% borrow;
-                        acc[i] = @truncate(d);
-                        borrow = (d >> 64) & 1;
-                    }
-                }
-            }
-            return acc;
+            var bytes: [8 * N]u8 = undefined;
+            const decoded = try std.fmt.hexToBytes(bytes[0 .. hex.len / 2], hex);
+            return B.fromBytesBE(decoded);
         }
     };
 }

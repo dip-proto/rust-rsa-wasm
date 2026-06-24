@@ -47,6 +47,50 @@ pub fn BigInt(comptime N: usize) type {
         pub const limbs = N;
         pub const Fe = [N]Limb; // a field element / N-limb integer
         pub const zero: Fe = @splat(0);
+        pub const one: Fe = blk: {
+            var o: Fe = @splat(0);
+            o[0] = 1;
+            break :blk o;
+        };
+
+        // Big-endian bytes (at most N limbs wide) into little-endian limbs. The
+        // caller guarantees be.len <= 8*N; shorter inputs are right-aligned, so
+        // leading-zero-trimmed values still land in the low limbs.
+        pub fn fromBytesBE(be: []const u8) Fe {
+            std.debug.assert(be.len <= 8 * N);
+            var bytes: [8 * N]u8 = @splat(0);
+            @memcpy(bytes[8 * N - be.len ..], be);
+            var fe: Fe = undefined;
+            for (0..N) |i| {
+                fe[i] = std.mem.readInt(Limb, bytes[8 * N - 8 * (i + 1) ..][0..8], .big);
+            }
+            return fe;
+        }
+
+        // Little-endian limbs into big-endian bytes (I2OSP).
+        pub fn toBytesBE(a: *const Fe) [8 * N]u8 {
+            var bytes: [8 * N]u8 = undefined;
+            for (0..N) |i| {
+                std.mem.writeInt(Limb, bytes[8 * N - 8 * (i + 1) ..][0..8], a[i], .big);
+            }
+            return bytes;
+        }
+
+        // R^2 mod m with R = 2^(64*N): start at 1 and double mod m 2*64*N times.
+        pub fn rSquared(m: *const Fe) Fe {
+            var acc: Fe = zero;
+            acc[0] = 1;
+            for (0..2 * 64 * N) |_| {
+                var carry: Limb = 0;
+                for (0..N) |i| {
+                    const nc = acc[i] >> 63;
+                    acc[i] = (acc[i] << 1) | carry;
+                    carry = nc;
+                }
+                if (carry != 0 or geq(&acc, m)) subInPlace(&acc, m);
+            }
+            return acc;
+        }
 
         pub inline fn geq(a: *const Fe, b: *const Fe) bool {
             var i: usize = N;

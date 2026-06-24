@@ -41,11 +41,10 @@ fn keyInit(
     return 0;
 }
 
-fn signWith(comptime R: type, sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) i32 {
+fn signWith(comptime R: type, sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) void {
     const kp: *const R.Key = @ptrCast(@alignCast(k));
     const s = R.sign(kp, msg[0..msg_len]);
     @memcpy(sig[0..R.signature_len], &s);
-    return 0;
 }
 
 fn verifyWith(
@@ -69,8 +68,8 @@ export fn rsa2048_key_bytes() callconv(.c) usize {
 export fn rsa2048_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]const u8, q_len: usize, dp: [*c]const u8, dp_len: usize, dq: [*c]const u8, dq_len: usize, qinv: [*c]const u8, qinv_len: usize) callconv(.c) i32 {
     return keyInit(R2048, out, p, p_len, q, q_len, dp, dp_len, dq, dq_len, qinv, qinv_len);
 }
-export fn rsa2048_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) i32 {
-    return signWith(R2048, sig, k, msg, msg_len);
+export fn rsa2048_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
+    signWith(R2048, sig, k, msg, msg_len);
 }
 export fn rsa2048_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
     return verifyWith(R2048, n, n_len, e, msg, msg_len, sig, sig_len);
@@ -84,8 +83,8 @@ export fn rsa3072_key_bytes() callconv(.c) usize {
 export fn rsa3072_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]const u8, q_len: usize, dp: [*c]const u8, dp_len: usize, dq: [*c]const u8, dq_len: usize, qinv: [*c]const u8, qinv_len: usize) callconv(.c) i32 {
     return keyInit(R3072, out, p, p_len, q, q_len, dp, dp_len, dq, dq_len, qinv, qinv_len);
 }
-export fn rsa3072_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) i32 {
-    return signWith(R3072, sig, k, msg, msg_len);
+export fn rsa3072_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
+    signWith(R3072, sig, k, msg, msg_len);
 }
 export fn rsa3072_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
     return verifyWith(R3072, n, n_len, e, msg, msg_len, sig, sig_len);
@@ -99,8 +98,8 @@ export fn rsa4096_key_bytes() callconv(.c) usize {
 export fn rsa4096_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]const u8, q_len: usize, dp: [*c]const u8, dp_len: usize, dq: [*c]const u8, dq_len: usize, qinv: [*c]const u8, qinv_len: usize) callconv(.c) i32 {
     return keyInit(R4096, out, p, p_len, q, q_len, dp, dp_len, dq, dq_len, qinv, qinv_len);
 }
-export fn rsa4096_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) i32 {
-    return signWith(R4096, sig, k, msg, msg_len);
+export fn rsa4096_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
+    signWith(R4096, sig, k, msg, msg_len);
 }
 export fn rsa4096_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
     return verifyWith(R4096, n, n_len, e, msg, msg_len, sig, sig_len);

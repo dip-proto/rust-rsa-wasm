@@ -74,7 +74,7 @@ macro_rules! rsa_module {
                         dq: *const u8, dq_len: usize,
                         qinv: *const u8, qinv_len: usize,
                     ) -> i32;
-                    pub fn $sign(sig: *mut u8, key: *const u8, msg: *const u8, msg_len: usize) -> i32;
+                    pub fn $sign(sig: *mut u8, key: *const u8, msg: *const u8, msg_len: usize);
                     pub fn $verify(
                         n: *const u8, n_len: usize, e: u64,
                         msg: *const u8, msg_len: usize,
