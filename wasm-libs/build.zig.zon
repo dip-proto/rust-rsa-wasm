@@ -1,0 +1,15 @@
+.{
+    .name = .rsa_wasm_libs,
+    .version = "0.0.0",
+    .fingerprint = 0xac5659d224a69b48,
+    .minimum_zig_version = "0.17.0-dev.825+23f46bcd4",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "rsa_ffi.zig",
+        "rsa.zig",
+        "key.zig",
+        "bigint.zig",
+    },
+}

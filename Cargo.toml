@@ -1,0 +1,25 @@
+[package]
+name = "rsa-wasm-signatures"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/dip-proto/rust-rsa-wasm"
+authors = ["Frank Denis <github@pureftpd.org>"]
+description = "Fast RSA PKCS#1 v1.5 signatures (SHA-256) for WebAssembly/WASI"
+keywords = ["rsa", "signature", "pkcs1", "wasm", "webassembly"]
+categories = ["cryptography", "wasm"]
+
+[features]
+default = []
+# Link the archive built without the wasm wide-arithmetic proposal, for runtimes
+# that do not implement it. Signing is ~2.4x slower but the module validates
+# everywhere; no `-W wide-arithmetic=y` needed on the runtime side.
+no-wide-arithmetic = []
+
+[dev-dependencies]
+benchmark-simple = "0.1.10"
+
+[[bench]]
+name = "benchmark"
+harness = false
