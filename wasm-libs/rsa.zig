@@ -166,7 +166,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
         // path. e is small (typically 65537), so a plain square-and-multiply over
         // its bits is enough; verification is not on the hot path.
         pub fn verify(n_be: []const u8, e: u64, msg: []const u8, sig: []const u8) bool {
-            if (sig.len != K or n_be.len > K or e == 0) return false;
+            if (sig.len != K or n_be.len > K or e < 3 or e & 1 == 0) return false;
 
             const n = M.fromBytesBE(n_be);
             if (n[0] & 1 == 0) return false; // RSA modulus is odd
@@ -254,4 +254,30 @@ test "RSA-3072 verify accepts the reference signature and rejects tampering" {
 
 test "RSA-4096 verify accepts the reference signature and rejects tampering" {
     try expectReferenceVerify(Rsa4096, key.default4096);
+}
+
+test "verify rejects invalid public exponents" {
+    const R = Rsa2048;
+    const M = bi.BigInt(32);
+    const msg = "forged without a private key";
+    const em = R.encodeMessage(msg);
+    const forged_sig = M.toBytesBE(&em);
+    const n: [R.signature_len]u8 = @splat(0xff);
+
+    try std.testing.expect(!R.verify(&n, 0, msg, &forged_sig));
+    try std.testing.expect(!R.verify(&n, 1, msg, &forged_sig));
+    try std.testing.expect(!R.verify(&n, 2, msg, &forged_sig));
+}
+
+test "key construction rejects components outside signer assumptions" {
+    const R = Rsa2048;
+    const d = key.default2048;
+    var short_prime: [128]u8 = @splat(0xff);
+    short_prime[0] = 0x7f;
+    var even_prime: [128]u8 = @splat(0xff);
+    even_prime[127] = 0xfe;
+
+    try std.testing.expectError(error.InvalidKey, R.Key.fromBytes(&short_prime, &short_prime, &.{1}, &.{1}, &.{1}));
+    try std.testing.expectError(error.InvalidKey, R.Key.fromBytes(&even_prime, &even_prime, &.{1}, &.{1}, &.{1}));
+    try std.testing.expectError(error.InvalidKey, R.Key.fromHex(d.p_hex, d.q_hex, d.p_hex, d.dq_hex, d.qinv_hex));
 }

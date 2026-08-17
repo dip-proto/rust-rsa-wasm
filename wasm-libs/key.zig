@@ -45,8 +45,7 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Same as fromHex but the components arrive as raw big-endian bytes, which
-        // is what the Rust wrapper passes straight through from its key material.
+        // Same as fromHex but the components arrive as raw big-endian bytes
         pub fn fromBytes(
             p_be: []const u8,
             q_be: []const u8,
@@ -64,7 +63,11 @@ pub fn Key(comptime N: usize) type {
         }
 
         // Derive the Montgomery constants once, from the parsed CRT components.
-        fn init(p: Fe, q: Fe, dp: Fe, dq: Fe, qinv: Fe) Self {
+        fn init(p: Fe, q: Fe, dp: Fe, dq: Fe, qinv: Fe) !Self {
+            if (p[0] & 1 == 0 or q[0] & 1 == 0) return error.InvalidKey;
+            if (p[N - 1] >> 63 == 0 or q[N - 1] >> 63 == 0) return error.InvalidKey;
+            if (B.geq(&dp, &p) or B.geq(&dq, &q) or B.geq(&qinv, &p)) return error.InvalidKey;
+
             const p_rr = B.rSquared(&p);
             const p_n0inv = negInv64(p[0]);
             return .{
