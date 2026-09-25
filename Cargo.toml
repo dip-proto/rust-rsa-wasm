@@ -6,8 +6,8 @@ readme = "README.md"
 license = "MIT"
 repository = "https://github.com/dip-proto/rust-rsa-wasm"
 authors = ["Frank Denis <github@pureftpd.org>"]
-description = "Fast RSA PKCS#1 v1.5 signatures (SHA-256) for WebAssembly/WASI"
-keywords = ["rsa", "signature", "pkcs1", "wasm", "webassembly"]
+description = "RSA signing and signature verification for WebAssembly with WASI, using PKCS#1 v1.5 and SHA-256 (RS256)."
+keywords = ["rsa", "signatures", "pkcs1", "wasm", "wasi"]
 categories = ["cryptography", "wasm"]
 
 [features]
