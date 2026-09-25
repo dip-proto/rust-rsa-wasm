@@ -1,6 +1,6 @@
 [package]
 name = "rsa-wasm-signatures"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 readme = "README.md"
 license = "MIT"
@@ -18,7 +18,7 @@ default = []
 no-wide-arithmetic = []
 
 [dev-dependencies]
-benchmark-simple = "0.1.10"
+benchmark-simple = "0.1.11"
 
 [[bench]]
 name = "benchmark"
