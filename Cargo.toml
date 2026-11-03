@@ -2,6 +2,7 @@
 name = "rsa-wasm-signatures"
 version = "0.2.0"
 edition = "2021"
+include = ["/src/", "/benches/", "/build.rs", "/wasm-libs/librsa.a", "/wasm-libs/librsa_nowide.a", "/README.md", "/LICENSE"]
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/dip-proto/rust-rsa-wasm"
