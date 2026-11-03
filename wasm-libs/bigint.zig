@@ -7,15 +7,16 @@ pub const Wide = u128;
 const is_wasm = builtin.target.cpu.arch.isWasm();
 const has_wide_arithmetic = is_wasm and std.Target.wasm.featureSetHas(builtin.target.cpu.features, .wide_arithmetic);
 
-// Full 64x64 -> 128-bit product, as { low, high }.
-//
-// On 64-bit native targets and on wasm with wide arithmetic, the compiler uses the CPU's own wide multiply for this.
-// Plain wasm would call the slow __multi3 helper instead, so there we build it from four 32-bit multiplies.
+// 64x64 -> 128-bit product, as { low, high }.
+// Without wide arithmetic, wasm would turn this into a slow __multi3 call, so it uses mul64Portable instead.
 pub inline fn mul64(a: Limb, b: Limb) [2]Limb {
-    if (!is_wasm or has_wide_arithmetic) {
-        const w = @as(Wide, a) * @as(Wide, b);
-        return .{ @truncate(w), @intCast(w >> 64) };
-    }
+    if (is_wasm and !has_wide_arithmetic) return mul64Portable(a, b);
+    const w = @as(Wide, a) * @as(Wide, b);
+    return .{ @truncate(w), @intCast(w >> 64) };
+}
+
+// Same thing, using only regular 64-bit multiplies.
+inline fn mul64Portable(a: Limb, b: Limb) [2]Limb {
     const a0: Limb = a & 0xffff_ffff;
     const a1: Limb = a >> 32;
     const b0: Limb = b & 0xffff_ffff;
@@ -35,10 +36,7 @@ pub inline fn mulWide(a: Limb, b: Limb) Wide {
 }
 
 // Fixed-size math on N 64-bit limbs, lowest limb first.
-//
-// Signing uses one per CRT prime (N = 16, 24 or 32 for 2048, 3072 or 4096-bit keys).
-// Verify uses one twice as wide, for the full modulus.
-// N is known at compile time, so the `inline for` loops unroll completely.
+// Signing uses it at half the modulus size (one CRT prime), and verify at full size.
 pub fn BigInt(comptime N: usize) type {
     return struct {
         pub const limbs = N;
@@ -50,8 +48,7 @@ pub fn BigInt(comptime N: usize) type {
             break :blk o;
         };
 
-        // Reads a big-endian number of at most 8*N bytes.
-        // Shorter inputs are fine, they're treated as having leading zeros.
+        // Shorter inputs are treated as having leading zeros.
         pub fn fromBytesBE(be: []const u8) Fe {
             std.debug.assert(be.len <= 8 * N);
             var bytes: [8 * N]u8 = @splat(0);
@@ -71,8 +68,7 @@ pub fn BigInt(comptime N: usize) type {
             return bytes;
         }
 
-        // R^2 mod m, with R = 2^(64*N).
-        // montMul(x, R^2) is how values get into Montgomery form.
+        // R^2 mod m (R = 2^(64*N)), used to put values in Montgomery form.
         pub fn rSquared(m: *const Fe) Fe {
             var acc: Fe = zero;
             acc[0] = 1;
@@ -142,15 +138,13 @@ pub fn BigInt(comptime N: usize) type {
             return r;
         }
 
-        // Montgomery multiplication: a * b * R^-1 mod m.
-        // Both inputs must be below m.
+        // a * b * R^-1 mod m, with a and b both below m.
         pub fn montMul(a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) Fe {
             @setEvalBranchQuota(20000);
             var t: [N + 1]Limb = @splat(0);
             var tn: Limb = 0; // top limb of t
             for (0..N) |i| {
                 const ai = a[i];
-                // t += a[i] * b
                 var c: Limb = 0;
                 inline for (0..N) |j| {
                     const prod = mulWide(ai, b[j]) + @as(Wide, t[j]) + @as(Wide, c);
@@ -178,8 +172,8 @@ pub fn BigInt(comptime N: usize) type {
             return r;
         }
 
-        // Full square of a, with no reduction.
-        // Each cross product a[i]*a[j] is computed once and doubled, which saves about half the multiplies.
+        // Same as mulFull(a, a), with about half the multiplies.
+        // Each cross product a[i]*a[j] is computed once and doubled.
         pub fn sqrFull(a: *const Fe) [2 * N]Limb {
             @setEvalBranchQuota(20000);
             var r: [2 * N]Limb = @splat(0);
@@ -211,8 +205,7 @@ pub fn BigInt(comptime N: usize) type {
             return r;
         }
 
-        // Montgomery reduction: T * R^-1 mod m.
-        // T must be below m*R, which is always true for the square of a number below m.
+        // T * R^-1 mod m, for any T below m*R, like the square of a number below m.
         pub fn redc(tin: *const [2 * N]Limb, m: *const Fe, n0inv: Limb) Fe {
             @setEvalBranchQuota(20000);
             var t: [2 * N + 1]Limb = undefined;
@@ -243,7 +236,6 @@ pub fn BigInt(comptime N: usize) type {
             return redc(&s, m, n0inv);
         }
 
-        // Full product a * b, with no reduction.
         pub fn mulFull(a: *const Fe, b: *const Fe) [2 * N]Limb {
             var r: [2 * N]Limb = @splat(0);
             for (0..N) |i| {
@@ -259,4 +251,18 @@ pub fn BigInt(comptime N: usize) type {
             return r;
         }
     };
+}
+
+// Native builds never use mul64Portable, so test it directly.
+test "mul64Portable matches the 128-bit product" {
+    var prng: std.Random.DefaultPrng = .init(0);
+    var values: [64]Limb = undefined;
+    for (&values) |*v| v.* = prng.random().int(Limb);
+    values[0..4].* = .{ 0, 1, 0xffff_ffff, std.math.maxInt(Limb) };
+    for (values) |a| {
+        for (values) |b| {
+            const w = @as(Wide, a) * @as(Wide, b);
+            try std.testing.expectEqual([2]Limb{ @truncate(w), @intCast(w >> 64) }, mul64Portable(a, b));
+        }
+    }
 }

@@ -1,16 +1,15 @@
 const std = @import("std");
 const bi = @import("bigint.zig");
 
-// -m0^-1 mod 2^64, the constant Montgomery reduction needs for each modulus.
-// Every Newton step doubles the number of correct bits, so 6 steps get all 64.
+// -m0^-1 mod 2^64, for Montgomery reduction.
+// Each Newton step doubles the correct bits, so 6 steps cover all 64.
 pub fn negInv64(m0: u64) u64 {
     var x: u64 = 1;
     inline for (0..6) |_| x = x *% (2 -% m0 *% x);
     return 0 -% x;
 }
 
-// RSA private key in CRT form, with each prime N limbs long.
-// The Montgomery constants are computed once when the key is loaded, so signing doesn't pay for them.
+// RSA private key in CRT form, with its Montgomery constants precomputed.
 pub fn Key(comptime N: usize) type {
     const B = bi.BigInt(N);
     const Fe = B.Fe;
@@ -60,9 +59,7 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Checks that the key fits what the signer expects, then precomputes the Montgomery constants.
-        //
-        // Both primes must be odd, and must use all N limbs with the top bit set.
+        // Both primes must be odd and use all N limbs, with the top bit set.
         // The signer counts on that to reduce values with a single subtraction.
         fn init(p: Fe, q: Fe, dp: Fe, dq: Fe, qinv: Fe) !Self {
             if (p[0] & 1 == 0 or q[0] & 1 == 0) return error.InvalidKey;
@@ -98,9 +95,8 @@ pub fn Key(comptime N: usize) type {
     };
 }
 
-// Test keys for each size, used by the benchmark and the tests.
-// The hex strings come from a PKCS#1 private key: both primes, both CRT exponents and the coefficient.
-// Each `sig_hex` is OpenSSL's signature of the benchmark message, which the tests compare against.
+// Test keys for the benchmark and the tests.
+// Each sig_hex is OpenSSL's signature of the benchmark message.
 
 pub const default2048 = struct {
     pub const p_hex = "f25f7b542cd1a36802bc14b2fa1b66cdd9b12e6c1fc0fdfebbf26c419c63d5974d3edd093553999a39beed5c4bf8c71e12b83348a5beead2115ecaecf4a69911c13084689879fd0fb9d133a39e75681aa781115ca8273ddf8ec14c53b861ad3679109c3a37746d3b57caa4e2e152d32baad2d95371de1728ba106602116821c7";
