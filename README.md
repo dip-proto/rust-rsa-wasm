@@ -72,11 +72,11 @@ exponentiation. The "Zig baseline" column is the standalone
 [rsa-wasm](https://github.com/dip-proto/rsa-wasm) signer timed on the same host;
 the per-signature machine code is identical, and the numbers track within noise.
 
-| Size | sign (this crate) | sign (Zig baseline) | verify |
-| ---- | ----------------: | ------------------: | -----: |
-| 2048 |          0.38 ms  |            0.38 ms  | 0.07 ms |
-| 3072 |          1.39 ms  |            1.38 ms  | 0.15 ms |
-| 4096 |          3.49 ms  |            3.47 ms  | 0.27 ms |
+| Size | sign (this crate) | sign (Zig baseline) |  verify |
+| ---- | ----------------: | ------------------: | ------: |
+| 2048 |           0.38 ms |             0.38 ms | 0.05 ms |
+| 3072 |           1.39 ms |             1.38 ms | 0.12 ms |
+| 4096 |           3.49 ms |             3.47 ms | 0.19 ms |
 
 Run them yourself with `cargo bench`.
 
