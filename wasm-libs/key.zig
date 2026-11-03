@@ -1,18 +1,16 @@
 const std = @import("std");
 const bi = @import("bigint.zig");
 
-// -m^-1 mod 2^64 via Newton's iteration (doubles correct bits each step). The
-// limb width is fixed, so this does not depend on the modulus size.
+// -m0^-1 mod 2^64, the constant Montgomery reduction needs for each modulus.
+// Every Newton step doubles the number of correct bits, so 6 steps get all 64.
 pub fn negInv64(m0: u64) u64 {
     var x: u64 = 1;
     inline for (0..6) |_| x = x *% (2 -% m0 *% x);
     return 0 -% x;
 }
 
-// An RSA CRT signing key for an N-limb prime (modulus = 2*N limbs). The limbs and
-// Montgomery constants are produced at runtime from hex: everything here is
-// computed once, before the benchmark's timing loop, so the per-signature cost
-// reflects only the modular exponentiation with a modulus the compiler never saw.
+// RSA private key in CRT form, with each prime N limbs long.
+// The Montgomery constants are computed once when the key is loaded, so signing doesn't pay for them.
 pub fn Key(comptime N: usize) type {
     const B = bi.BigInt(N);
     const Fe = B.Fe;
@@ -27,7 +25,7 @@ pub fn Key(comptime N: usize) type {
         q_n0inv: u64,
         p_rr: Fe, // R^2 mod p
         q_rr: Fe, // R^2 mod q
-        qinv_mont: Fe, // (q^-1 mod p) * R mod p
+        qinv_mont: Fe, // q^-1 mod p, in Montgomery form
 
         pub fn fromHex(
             p_hex: []const u8,
@@ -45,7 +43,7 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Same as fromHex but the components arrive as raw big-endian bytes
+        // Same as fromHex but the components arrive as raw big-endian bytes.
         pub fn fromBytes(
             p_be: []const u8,
             q_be: []const u8,
@@ -62,7 +60,10 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Derive the Montgomery constants once, from the parsed CRT components.
+        // Checks that the key fits what the signer expects, then precomputes the Montgomery constants.
+        //
+        // Both primes must be odd, and must use all N limbs with the top bit set.
+        // The signer counts on that to reduce values with a single subtraction.
         fn init(p: Fe, q: Fe, dp: Fe, dq: Fe, qinv: Fe) !Self {
             if (p[0] & 1 == 0 or q[0] & 1 == 0) return error.InvalidKey;
             if (p[N - 1] >> 63 == 0 or q[N - 1] >> 63 == 0) return error.InvalidKey;
@@ -79,18 +80,15 @@ pub fn Key(comptime N: usize) type {
                 .q_n0inv = negInv64(q[0]),
                 .p_rr = p_rr,
                 .q_rr = B.rSquared(&q),
-                // qinv * R mod p = montMul(qinv, R^2) since montMul folds in one R^-1.
                 .qinv_mont = B.montMul(&qinv, &p_rr, &p, p_n0inv),
             };
         }
 
-        // Big-endian bytes (up to N limbs) into little-endian 64-bit limbs.
         fn bytesToFe(be: []const u8) !Fe {
             if (be.len > 8 * N) return error.KeyTooLong;
             return B.fromBytesBE(be);
         }
 
-        // Big-endian hex (up to N limbs) into little-endian 64-bit limbs.
         fn hexToFe(hex: []const u8) !Fe {
             if (hex.len > 2 * 8 * N) return error.KeyTooLong;
             var bytes: [8 * N]u8 = undefined;
@@ -100,11 +98,9 @@ pub fn Key(comptime N: usize) type {
     };
 }
 
-// Default key material per modulus size, used when no key is passed on the
-// command line. The hex strings are the big numbers from the ASN.1 PKCS#1 private
-// key (the two primes, both CRT exponents and the coefficient); parsing still
-// happens at runtime. Each `sig_hex` is the OpenSSL PKCS#1 v1.5 + SHA-256
-// signature of the benchmark message, used as the reference test vector.
+// Test keys for each size, used by the benchmark and the tests.
+// The hex strings come from a PKCS#1 private key: both primes, both CRT exponents and the coefficient.
+// Each `sig_hex` is OpenSSL's signature of the benchmark message, which the tests compare against.
 
 pub const default2048 = struct {
     pub const p_hex = "f25f7b542cd1a36802bc14b2fa1b66cdd9b12e6c1fc0fdfebbf26c419c63d5974d3edd093553999a39beed5c4bf8c71e12b83348a5beead2115ecaecf4a69911c13084689879fd0fb9d133a39e75681aa781115ca8273ddf8ec14c53b861ad3679109c3a37746d3b57caa4e2e152d32baad2d95371de1728ba106602116821c7";
