@@ -17,8 +17,10 @@ pub fn Rsa(comptime modulus_bits: usize) type {
     const N = modulus_bits / 128; // limbs per CRT prime
     const K = modulus_bits / 8; // modulus bytes
     const B = bi.BigInt(N);
-    const M = bi.BigInt(2 * N); // full modulus size, for verify
+    const M = bi.PublicBigInt(2 * N); // full modulus size, for verify
     const Fe = B.Fe;
+    // Window size for constant-time exponentiation: 6 bits is faster for 4096-bit keys, 5 for smaller ones.
+    const CT_WINDOW = if (modulus_bits >= 4096) 6 else 5;
 
     return struct {
         pub const Key = key.Key(N);
@@ -61,6 +63,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
 
         // base^exp mod m, with base and result in Montgomery form.
         fn montExp(base_mont: *const Fe, exp: *const Fe, m: *const Fe, n0inv: u64, mont_one: *const Fe) Fe {
+            if (std.options.side_channels_mitigations != .none) return montExpConstantTime(base_mont, exp, m, n0inv, mont_one);
             var table: [TABLE_SIZE]Fe = undefined;
             table[0] = base_mont.*;
             const x2 = B.montSqr(base_mont, m, n0inv);
@@ -106,6 +109,36 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return result;
         }
 
+        // Same as montExp(), but in constant time.
+        // It does the same work for every exponent, and table lookups read every entry.
+        fn montExpConstantTime(base_mont: *const Fe, exp: *const Fe, m: *const Fe, n0inv: u64, mont_one: *const Fe) Fe {
+            var table: [1 << CT_WINDOW]Fe = undefined;
+            table[0] = mont_one.*;
+            table[1] = base_mont.*;
+            for (2..table.len) |k| {
+                table[k] = B.montMul(&table[k - 1], base_mont, m, n0inv);
+            }
+
+            const windows = (64 * N + CT_WINDOW - 1) / CT_WINDOW;
+            var result = bi.ct.lookup(&table, windowAt(exp, (windows - 1) * CT_WINDOW));
+            var w: usize = windows - 1;
+            while (w > 0) {
+                w -= 1;
+                for (0..CT_WINDOW) |_| result = B.montSqr(&result, m, n0inv);
+                const entry = bi.ct.lookup(&table, windowAt(exp, w * CT_WINDOW));
+                result = B.montMul(&result, &entry, m, n0inv);
+            }
+            return result;
+        }
+
+        // The CT_WINDOW bits of exp starting at bit `pos`.
+        fn windowAt(exp: *const Fe, pos: usize) usize {
+            const lo = exp[pos / 64];
+            const hi: u64 = if (pos / 64 + 1 < N) exp[pos / 64 + 1] else 0;
+            const bits = ((@as(u128, hi) << 64) | lo) >> @intCast(pos % 64);
+            return @intCast(bits & ((1 << CT_WINDOW) - 1));
+        }
+
         inline fn montOne(m: *const Fe, n0inv: u64, rr: *const Fe) Fe {
             return B.montMul(&B.one, rr, m, n0inv);
         }
@@ -140,8 +173,9 @@ pub fn Rsa(comptime modulus_bits: usize) type {
                 s[i] = @truncate(t);
                 carry = t >> 64;
             }
+            // In constant-time mode, go through every limb, even once the carry is zero.
             var i: usize = N;
-            while (i < 2 * N and carry != 0) : (i += 1) {
+            while (i < 2 * N and (std.options.side_channels_mitigations != .none or carry != 0)) : (i += 1) {
                 const t = @as(u128, s[i]) + carry;
                 s[i] = @truncate(t);
                 carry = t >> 64;
@@ -162,7 +196,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             const n0inv = key.negInv64(n[0]);
             const rr = M.rSquared(&n);
 
-            const base_mont = M.montMul(&s, &rr, &n, n0inv); // to Montgomery form
+            const base_mont = M.montMul(&s, &rr, &n, n0inv);
             var result = M.montMul(&M.one, &rr, &n, n0inv);
             var bit: isize = 63 - @as(isize, @clz(e));
             while (bit >= 0) : (bit -= 1) {

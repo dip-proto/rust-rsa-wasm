@@ -35,10 +35,117 @@ pub inline fn mulWide(a: Limb, b: Limb) Wide {
     return (@as(Wide, r[1]) << 64) | r[0];
 }
 
+// Operations on private key material.
+// They run in constant time unless side-channel mitigations are turned off.
+pub const ct = if (std.options.side_channels_mitigations == .none) ct_unprotected else ct_protected;
+
+inline fn subWithBorrow(a: anytype, b: *const @TypeOf(a.*)) Limb {
+    var borrow: Wide = 0;
+    inline for (0..a.len) |i| {
+        const d = @as(Wide, a[i]) -% @as(Wide, b[i]) -% borrow;
+        a[i] = @truncate(d);
+        borrow = (d >> 64) & 1;
+    }
+    return @intCast(borrow);
+}
+
+const ct_protected = struct {
+    // Keeps the compiler from seeing that a mask is either all zeros or all ones.
+    // If it can see that, it turns the selection back into a branch.
+    fn barrier(x: Limb) Limb {
+        var v = x;
+        asm (""
+            : [v] "+r" (v),
+        );
+        return v;
+    }
+
+    fn mask(on: bool) Limb {
+        return barrier(@as(Limb, 0) -% @intFromBool(on));
+    }
+
+    pub fn geq(a: anytype, b: *const @TypeOf(a.*)) bool {
+        var borrow: Wide = 0;
+        inline for (0..a.len) |i| {
+            borrow = ((@as(Wide, a[i]) -% @as(Wide, b[i]) -% borrow) >> 64) & 1;
+        }
+        return borrow == 0;
+    }
+
+    // Subtracts m from a if a, with `top` (0 or 1) as an extra high limb, is at least m.
+    // It runs after every multiplication, and wasmer's LLVM backend is much slower when it isn't inlined.
+    pub inline fn reduceOnce(a: anytype, top: Limb, m: *const @TypeOf(a.*)) void {
+        var d = a.*;
+        const borrow = subWithBorrow(&d, m);
+        const take = mask((top | (borrow ^ 1)) != 0);
+        inline for (0..a.len) |i| a[i] ^= (a[i] ^ d[i]) & take;
+    }
+
+    pub fn addIf(on: bool, a: anytype, m: *const @TypeOf(a.*)) void {
+        const take = mask(on);
+        var carry: Wide = 0;
+        inline for (0..a.len) |i| {
+            const s = @as(Wide, a[i]) + @as(Wide, m[i] & take) + carry;
+            a[i] = @truncate(s);
+            carry = s >> 64;
+        }
+    }
+
+    // Returns table[index], reading every entry.
+    pub fn lookup(table: anytype, index: usize) @TypeOf(table[0]) {
+        const V = @Vector(table[0].len, Limb);
+        var r: V = @splat(0);
+        for (table, 0..) |*entry, i| {
+            r |= @as(V, entry.*) & @as(V, @splat(mask(i == index)));
+        }
+        return r;
+    }
+};
+
+const ct_unprotected = struct {
+    pub inline fn geq(a: anytype, b: *const @TypeOf(a.*)) bool {
+        var i: usize = a.len;
+        while (i > 0) {
+            i -= 1;
+            if (a[i] != b[i]) return a[i] > b[i];
+        }
+        return true;
+    }
+
+    pub inline fn reduceOnce(a: anytype, top: Limb, m: *const @TypeOf(a.*)) void {
+        if (top != 0 or geq(a, m)) _ = subWithBorrow(a, m);
+    }
+
+    pub inline fn addIf(on: bool, a: anytype, m: *const @TypeOf(a.*)) void {
+        if (on) {
+            var carry: Wide = 0;
+            inline for (0..a.len) |i| {
+                const s = @as(Wide, a[i]) + @as(Wide, m[i]) + carry;
+                a[i] = @truncate(s);
+                carry = s >> 64;
+            }
+        }
+    }
+};
+
 // Fixed-size math on N 64-bit limbs, lowest limb first.
-// Signing uses it at half the modulus size (one CRT prime), and verify at full size.
+// Signing uses it at half the modulus size (one CRT prime).
 pub fn BigInt(comptime N: usize) type {
+    return BigIntWith(N, ct);
+}
+
+// Same as BigInt, but never constant time.
+// Verification uses it at full size, since everything there is public.
+pub fn PublicBigInt(comptime N: usize) type {
+    return BigIntWith(N, ct_unprotected);
+}
+
+fn BigIntWith(comptime N: usize, comptime ct_: type) type {
     return struct {
+        // On WebAssembly, constant-time squaring isn't inlined.
+        // Otherwise, the exponentiation loop gets huge and slow.
+        const square_call: std.builtin.CallModifier = if (is_wasm and ct_ == ct_protected) .never_inline else .auto;
+
         pub const limbs = N;
         pub const Fe = [N]Limb;
         pub const zero: Fe = @splat(0);
@@ -79,31 +186,17 @@ pub fn BigInt(comptime N: usize) type {
                     acc[i] = (acc[i] << 1) | carry;
                     carry = nc;
                 }
-                if (carry != 0 or geq(&acc, m)) subInPlace(&acc, m);
+                ct_.reduceOnce(&acc, carry, m);
             }
             return acc;
         }
 
         pub inline fn geq(a: *const Fe, b: *const Fe) bool {
-            var i: usize = N;
-            while (i > 0) {
-                i -= 1;
-                if (a[i] != b[i]) return a[i] > b[i];
-            }
-            return true;
-        }
-
-        inline fn subInPlace(a: *Fe, m: *const Fe) void {
-            var borrow: Wide = 0;
-            inline for (0..N) |i| {
-                const d = @as(Wide, a[i]) -% @as(Wide, m[i]) -% borrow;
-                a[i] = @truncate(d);
-                borrow = (d >> 64) & 1;
-            }
+            return ct_.geq(a, b);
         }
 
         pub inline fn condSub(a: *Fe, m: *const Fe) void {
-            if (geq(a, m)) subInPlace(a, m);
+            ct_.reduceOnce(a, 0, m);
         }
 
         pub inline fn addModNoMont(a: *const Fe, b: *const Fe, m: *const Fe) Fe {
@@ -115,7 +208,7 @@ pub fn BigInt(comptime N: usize) type {
                 carry = @intCast(s >> 64);
             }
             // Don't ignore the carry: if the sum overflowed, it's already above m.
-            if (carry != 0 or geq(&r, m)) subInPlace(&r, m);
+            ct_.reduceOnce(&r, carry, m);
             return r;
         }
 
@@ -127,14 +220,7 @@ pub fn BigInt(comptime N: usize) type {
                 r[i] = @truncate(d);
                 borrow = (d >> 64) & 1;
             }
-            if (borrow != 0) {
-                var carry: Wide = 0;
-                inline for (0..N) |i| {
-                    const s = @as(Wide, r[i]) + @as(Wide, m[i]) + carry;
-                    r[i] = @truncate(s);
-                    carry = s >> 64;
-                }
-            }
+            ct_.addIf(borrow != 0, &r, m);
             return r;
         }
 
@@ -168,7 +254,7 @@ pub fn BigInt(comptime N: usize) type {
             }
             var r: Fe = t[0..N].*;
             // The result is below 2m, so one subtraction is enough.
-            if (tn != 0 or geq(&r, m)) subInPlace(&r, m);
+            ct_.reduceOnce(&r, tn, m);
             return r;
         }
 
@@ -211,6 +297,7 @@ pub fn BigInt(comptime N: usize) type {
             var t: [2 * N + 1]Limb = undefined;
             @memcpy(t[0 .. 2 * N], tin);
             t[2 * N] = 0;
+            var top: Limb = 0;
             for (0..N) |i| {
                 const mh: Limb = t[i] *% n0inv;
                 var c: Limb = 0;
@@ -219,21 +306,30 @@ pub fn BigInt(comptime N: usize) type {
                     t[i + j] = @truncate(prod);
                     c = @intCast(prod >> 64);
                 }
-                var k: usize = i + N;
-                while (c != 0) : (k += 1) {
-                    const s = @as(Wide, t[k]) + @as(Wide, c);
-                    t[k] = @truncate(s);
-                    c = @intCast(s >> 64);
+                // Constant-time code keeps the carry for the next step, instead of a loop whose length depends on the data.
+                // From 32 limbs (4096-bit keys), that's faster anyway, so it's used either way.
+                if (ct_ == ct_unprotected and N < 32) {
+                    var k: usize = i + N;
+                    while (c != 0) : (k += 1) {
+                        const s = @as(Wide, t[k]) + @as(Wide, c);
+                        t[k] = @truncate(s);
+                        c = @intCast(s >> 64);
+                    }
+                } else {
+                    const s = @as(Wide, t[i + N]) + @as(Wide, c) + @as(Wide, top);
+                    t[i + N] = @truncate(s);
+                    top = @intCast(s >> 64);
                 }
             }
+            t[2 * N] += top;
             var r: Fe = t[N .. 2 * N].*;
-            if (t[2 * N] != 0 or geq(&r, m)) subInPlace(&r, m);
+            ct_.reduceOnce(&r, t[2 * N], m);
             return r;
         }
 
         pub inline fn montSqr(a: *const Fe, m: *const Fe, n0inv: Limb) Fe {
-            const s = sqrFull(a);
-            return redc(&s, m, n0inv);
+            const s = @call(square_call, sqrFull, .{a});
+            return @call(square_call, redc, .{ &s, m, n0inv });
         }
 
         pub fn mulFull(a: *const Fe, b: *const Fe) [2 * N]Limb {
@@ -251,6 +347,31 @@ pub fn BigInt(comptime N: usize) type {
             return r;
         }
     };
+}
+
+fn testCt(ct_: anytype) !void {
+    const m: [2]Limb = .{ 5, 1 };
+    var a = m;
+    try std.testing.expect(ct_.geq(&a, &m));
+    ct_.reduceOnce(&a, 0, &m);
+    try std.testing.expectEqual([2]Limb{ 0, 0 }, a);
+
+    a = .{ 4, 1 };
+    try std.testing.expect(!ct_.geq(&a, &m));
+    ct_.reduceOnce(&a, 0, &m);
+    try std.testing.expectEqual([2]Limb{ 4, 1 }, a);
+    ct_.reduceOnce(&a, 1, &m);
+    try std.testing.expectEqual([2]Limb{ std.math.maxInt(Limb), std.math.maxInt(Limb) }, a);
+
+    ct_.addIf(false, &a, &m);
+    try std.testing.expectEqual([2]Limb{ std.math.maxInt(Limb), std.math.maxInt(Limb) }, a);
+    ct_.addIf(true, &a, &m);
+    try std.testing.expectEqual([2]Limb{ 4, 1 }, a);
+}
+
+test ct {
+    try testCt(ct_protected);
+    try testCt(ct_unprotected);
 }
 
 // Native builds never use mul64Portable, so test it directly.

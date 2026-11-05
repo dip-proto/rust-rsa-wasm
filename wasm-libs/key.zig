@@ -42,7 +42,7 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Same as fromHex but the components arrive as raw big-endian bytes.
+        // Same as fromHex(), with raw big-endian bytes.
         pub fn fromBytes(
             p_be: []const u8,
             q_be: []const u8,
@@ -89,7 +89,9 @@ pub fn Key(comptime N: usize) type {
         fn hexToFe(hex: []const u8) !Fe {
             if (hex.len > 2 * 8 * N) return error.KeyTooLong;
             var bytes: [8 * N]u8 = undefined;
-            const decoded = try std.fmt.hexToBytes(bytes[0 .. hex.len / 2], hex);
+            const decoded = bytes[0 .. hex.len / 2];
+            // Decoded in constant time, since this is the private key.
+            try std.crypto.codecs.hex.decode(decoded, hex);
             return B.fromBytesBE(decoded);
         }
     };
