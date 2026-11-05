@@ -8,9 +8,6 @@ const sha256_prefix = [_]u8{
     0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
 };
 
-const WINDOW = 7;
-const TABLE_SIZE = 1 << (WINDOW - 1); // the table only holds odd powers
-
 // PKCS#1 v1.5 + SHA-256 signing and verification for one key size.
 pub fn Rsa(comptime modulus_bits: usize) type {
     if (modulus_bits % 128 != 0) @compileError("modulus_bits must be a multiple of 128");
@@ -19,7 +16,10 @@ pub fn Rsa(comptime modulus_bits: usize) type {
     const B = bi.BigInt(N);
     const M = bi.PublicBigInt(2 * N); // full modulus size, for verify
     const Fe = B.Fe;
-    // Window size for constant-time exponentiation: 6 bits is faster for 4096-bit keys, 5 for smaller ones.
+    // Window sizes, for the default and the constant-time exponentiation.
+    // The larger ones are faster for 4096-bit keys, the smaller ones below that.
+    const WINDOW = if (modulus_bits >= 4096) 7 else 6;
+    const TABLE_SIZE = 1 << (WINDOW - 1); // the table only holds odd powers
     const CT_WINDOW = if (modulus_bits >= 4096) 6 else 5;
 
     return struct {
@@ -44,7 +44,6 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return M.fromBytesBE(&em);
         }
 
-        // Reduces a full-size number mod one of the primes, in Montgomery form.
         fn reduceToMont(full: *const [2 * N]u64, m: *const Fe, n0inv: u64, rr: *const Fe) Fe {
             var mlo: Fe = full[0..N].*;
             var mhi: Fe = full[N .. 2 * N].*;
@@ -109,8 +108,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return result;
         }
 
-        // Same as montExp(), but in constant time.
-        // It does the same work for every exponent, and table lookups read every entry.
+        // Does the same work for every exponent, and its table lookups read every entry.
         fn montExpConstantTime(base_mont: *const Fe, exp: *const Fe, m: *const Fe, n0inv: u64, mont_one: *const Fe) Fe {
             var table: [1 << CT_WINDOW]Fe = undefined;
             table[0] = mont_one.*;
@@ -131,7 +129,6 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return result;
         }
 
-        // The CT_WINDOW bits of exp starting at bit `pos`.
         fn windowAt(exp: *const Fe, pos: usize) usize {
             const lo = exp[pos / 64];
             const hi: u64 = if (pos / 64 + 1 < N) exp[pos / 64 + 1] else 0;
@@ -155,7 +152,6 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             const sp_mont = montExp(&base_p, &k.p_exp, &k.p, k.p_n0inv, &mont_one_p);
             const sq_mont = montExp(&base_q, &k.q_exp, &k.q, k.q_n0inv, &mont_one_q);
 
-            // Leave Montgomery form.
             const sp = B.montMul(&sp_mont, &B.one, &k.p, k.p_n0inv);
             const sq = B.montMul(&sq_mont, &B.one, &k.q, k.q_n0inv);
 
@@ -169,14 +165,14 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             var s: [2 * N]u64 = qh;
             var carry: u128 = 0;
             for (0..N) |i| {
-                const t = @as(u128, s[i]) + @as(u128, sq[i]) + carry;
+                const t = @as(u128, s[i]) + sq[i] + carry;
                 s[i] = @truncate(t);
                 carry = t >> 64;
             }
             // In constant-time mode, go through every limb, even once the carry is zero.
             var i: usize = N;
             while (i < 2 * N and (std.options.side_channels_mitigations != .none or carry != 0)) : (i += 1) {
-                const t = @as(u128, s[i]) + carry;
+                const t = s[i] + carry;
                 s[i] = @truncate(t);
                 carry = t >> 64;
             }

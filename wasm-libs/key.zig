@@ -42,7 +42,6 @@ pub fn Key(comptime N: usize) type {
             );
         }
 
-        // Same as fromHex(), with raw big-endian bytes.
         pub fn fromBytes(
             p_be: []const u8,
             q_be: []const u8,

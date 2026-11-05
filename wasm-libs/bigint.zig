@@ -11,7 +11,7 @@ const has_wide_arithmetic = is_wasm and std.Target.wasm.featureSetHas(builtin.ta
 // Without wide arithmetic, wasm would turn this into a slow __multi3 call, so it uses mul64Portable instead.
 pub inline fn mul64(a: Limb, b: Limb) [2]Limb {
     if (is_wasm and !has_wide_arithmetic) return mul64Portable(a, b);
-    const w = @as(Wide, a) * @as(Wide, b);
+    const w = @as(Wide, a) * b;
     return .{ @truncate(w), @intCast(w >> 64) };
 }
 
@@ -42,7 +42,7 @@ pub const ct = if (std.options.side_channels_mitigations == .none) ct_unprotecte
 inline fn subWithBorrow(a: anytype, b: *const @TypeOf(a.*)) Limb {
     var borrow: Wide = 0;
     inline for (0..a.len) |i| {
-        const d = @as(Wide, a[i]) -% @as(Wide, b[i]) -% borrow;
+        const d = @as(Wide, a[i]) -% b[i] -% borrow;
         a[i] = @truncate(d);
         borrow = (d >> 64) & 1;
     }
@@ -67,7 +67,7 @@ const ct_protected = struct {
     pub fn geq(a: anytype, b: *const @TypeOf(a.*)) bool {
         var borrow: Wide = 0;
         inline for (0..a.len) |i| {
-            borrow = ((@as(Wide, a[i]) -% @as(Wide, b[i]) -% borrow) >> 64) & 1;
+            borrow = ((@as(Wide, a[i]) -% b[i] -% borrow) >> 64) & 1;
         }
         return borrow == 0;
     }
@@ -85,7 +85,7 @@ const ct_protected = struct {
         const take = mask(on);
         var carry: Wide = 0;
         inline for (0..a.len) |i| {
-            const s = @as(Wide, a[i]) + @as(Wide, m[i] & take) + carry;
+            const s = @as(Wide, a[i]) + (m[i] & take) + carry;
             a[i] = @truncate(s);
             carry = s >> 64;
         }
@@ -120,7 +120,7 @@ const ct_unprotected = struct {
         if (on) {
             var carry: Wide = 0;
             inline for (0..a.len) |i| {
-                const s = @as(Wide, a[i]) + @as(Wide, m[i]) + carry;
+                const s = @as(Wide, a[i]) + m[i] + carry;
                 a[i] = @truncate(s);
                 carry = s >> 64;
             }
@@ -203,7 +203,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             var r: Fe = undefined;
             var carry: Limb = 0;
             inline for (0..N) |i| {
-                const s = @as(Wide, a[i]) + @as(Wide, b[i]) + @as(Wide, carry);
+                const s = @as(Wide, a[i]) + b[i] + carry;
                 r[i] = @truncate(s);
                 carry = @intCast(s >> 64);
             }
@@ -216,7 +216,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             var r: Fe = undefined;
             var borrow: Wide = 0;
             inline for (0..N) |i| {
-                const d = @as(Wide, a[i]) -% @as(Wide, b[i]) -% borrow;
+                const d = @as(Wide, a[i]) -% b[i] -% borrow;
                 r[i] = @truncate(d);
                 borrow = (d >> 64) & 1;
             }
@@ -233,22 +233,22 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                 const ai = a[i];
                 var c: Limb = 0;
                 inline for (0..N) |j| {
-                    const prod = mulWide(ai, b[j]) + @as(Wide, t[j]) + @as(Wide, c);
+                    const prod = mulWide(ai, b[j]) + t[j] + c;
                     t[j] = @truncate(prod);
                     c = @intCast(prod >> 64);
                 }
-                const s0 = @as(Wide, tn) + @as(Wide, c);
+                const s0 = @as(Wide, tn) + c;
                 const tcarry: Limb = @intCast(s0 >> 64);
 
                 // Add the multiple of m that zeroes the low limb, then drop that limb.
                 const mh: Limb = t[0] *% n0inv;
-                var c2: Limb = @intCast((mulWide(mh, m[0]) + @as(Wide, t[0])) >> 64);
+                var c2: Limb = @intCast((mulWide(mh, m[0]) + t[0]) >> 64);
                 inline for (1..N) |j| {
-                    const prod = mulWide(mh, m[j]) + @as(Wide, t[j]) + @as(Wide, c2);
+                    const prod = mulWide(mh, m[j]) + t[j] + c2;
                     t[j - 1] = @truncate(prod);
                     c2 = @intCast(prod >> 64);
                 }
-                const s1 = @as(Wide, @as(Limb, @truncate(s0))) + @as(Wide, c2);
+                const s1 = @as(Wide, @as(Limb, @truncate(s0))) + c2;
                 t[N - 1] = @truncate(s1);
                 tn = tcarry + @as(Limb, @intCast(s1 >> 64));
             }
@@ -267,7 +267,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                 var c: Limb = 0;
                 const ai = a[i];
                 inline for (i + 1..N) |j| {
-                    const prod = mulWide(ai, a[j]) + @as(Wide, r[i + j]) + @as(Wide, c);
+                    const prod = mulWide(ai, a[j]) + r[i + j] + c;
                     r[i + j] = @truncate(prod);
                     c = @intCast(prod >> 64);
                 }
@@ -282,9 +282,9 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             var c2: Wide = 0;
             inline for (0..N) |i| {
                 const sq = mulWide(a[i], a[i]);
-                var s = @as(Wide, r[2 * i]) + (sq & 0xffff_ffff_ffff_ffff) + c2;
+                var s = r[2 * i] + (sq & 0xffff_ffff_ffff_ffff) + c2;
                 r[2 * i] = @truncate(s);
-                s = @as(Wide, r[2 * i + 1]) + (sq >> 64) + (s >> 64);
+                s = r[2 * i + 1] + (sq >> 64) + (s >> 64);
                 r[2 * i + 1] = @truncate(s);
                 c2 = s >> 64;
             }
@@ -302,7 +302,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                 const mh: Limb = t[i] *% n0inv;
                 var c: Limb = 0;
                 inline for (0..N) |j| {
-                    const prod = mulWide(mh, m[j]) + @as(Wide, t[i + j]) + @as(Wide, c);
+                    const prod = mulWide(mh, m[j]) + t[i + j] + c;
                     t[i + j] = @truncate(prod);
                     c = @intCast(prod >> 64);
                 }
@@ -311,12 +311,12 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                 if (ct_ == ct_unprotected and N < 32) {
                     var k: usize = i + N;
                     while (c != 0) : (k += 1) {
-                        const s = @as(Wide, t[k]) + @as(Wide, c);
+                        const s = @as(Wide, t[k]) + c;
                         t[k] = @truncate(s);
                         c = @intCast(s >> 64);
                     }
                 } else {
-                    const s = @as(Wide, t[i + N]) + @as(Wide, c) + @as(Wide, top);
+                    const s = @as(Wide, t[i + N]) + c + top;
                     t[i + N] = @truncate(s);
                     top = @intCast(s >> 64);
                 }
@@ -338,7 +338,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                 var c: Limb = 0;
                 const ai = a[i];
                 for (0..N) |j| {
-                    const prod = mulWide(ai, b[j]) + @as(Wide, r[i + j]) + @as(Wide, c);
+                    const prod = mulWide(ai, b[j]) + r[i + j] + c;
                     r[i + j] = @truncate(prod);
                     c = @intCast(prod >> 64);
                 }
@@ -382,7 +382,7 @@ test "mul64Portable matches the 128-bit product" {
     values[0..4].* = .{ 0, 1, 0xffff_ffff, std.math.maxInt(Limb) };
     for (values) |a| {
         for (values) |b| {
-            const w = @as(Wide, a) * @as(Wide, b);
+            const w = @as(Wide, a) * b;
             try std.testing.expectEqual([2]Limb{ @truncate(w), @intCast(w >> 64) }, mul64Portable(a, b));
         }
     }
