@@ -1,6 +1,6 @@
-# FasterRSA signatures for Rust / WebAssembly
+# Fast(er) RSA signatures for Rust / WebAssembly
 
-Fast RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly/WASI.
+The fastest implementation of RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly.
 
 > This crate is not native or browser builds.
 > By default, the inner loop uses the WebAssembly wide-arithmetic proposal, so
