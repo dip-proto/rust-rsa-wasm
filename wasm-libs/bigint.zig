@@ -4,8 +4,8 @@ const builtin = @import("builtin");
 pub const Limb = u64;
 pub const Wide = u128;
 
-const is_wasm = builtin.target.cpu.arch.isWasm();
-const has_wide_arithmetic = is_wasm and std.Target.wasm.featureSetHas(builtin.target.cpu.features, .wide_arithmetic);
+pub const is_wasm = builtin.target.cpu.arch.isWasm();
+pub const has_wide_arithmetic = is_wasm and std.Target.wasm.featureSetHas(builtin.target.cpu.features, .wide_arithmetic);
 
 // 64x64 -> 128-bit product, as { low, high }.
 // Without wide arithmetic, wasm would turn this into a slow __multi3 call, so it uses mul64Portable instead.
@@ -105,6 +105,18 @@ const ct_protected = struct {
         }
         return r;
     }
+
+    // The low halves of table[lo], with the high halves of table[hi], reading every entry.
+    pub fn lookupHalves(table: anytype, lo: usize, hi: usize) @TypeOf(table[0]) {
+        const V = @Vector(table[0].len, Limb);
+        var r: V = @splat(0);
+        for (table, 0..) |*entry, i| {
+            const e: V = entry.*;
+            const m: V = @splat((mask(i == lo) & 0xffff_ffff) | (mask(i == hi) << 32));
+            r |= e & m;
+        }
+        return r;
+    }
 };
 
 const ct_unprotected = struct {
@@ -119,6 +131,12 @@ const ct_unprotected = struct {
 
     pub inline fn reduceOnce(a: anytype, top: Limb, m: *const @TypeOf(a.*)) void {
         if (top != 0 or geq(a, m)) _ = subWithBorrow(a, m);
+    }
+
+    pub fn lookupHalves(table: anytype, lo: usize, hi: usize) @TypeOf(table[0]) {
+        var r: @TypeOf(table[0]) = undefined;
+        for (&r, &table[lo], &table[hi]) |*w, *a, *b| w.* = (a.* & 0xffff_ffff) | (b.* & 0xffff_ffff_0000_0000);
+        return r;
     }
 
     pub fn addIf(on: bool, a: anytype, m: *const @TypeOf(a.*)) void {
@@ -195,12 +213,12 @@ const ColumnSum = struct {
 
 // Volatile, so that LLVM loads each limb right where it's needed.
 // Otherwise, it loads them all upfront, and Cranelift has to spill them.
-inline fn load(p: anytype, comptime i: usize) Limb {
+pub inline fn load(p: anytype, comptime i: usize) Limb {
     const src: *const volatile Limb = &p[i];
     return src.*;
 }
 
-inline fn store(p: anytype, comptime i: usize, v: Limb) void {
+pub inline fn store(p: anytype, comptime i: usize, v: Limb) void {
     const dst: *volatile Limb = &p[i];
     dst.* = v;
 }
@@ -531,6 +549,15 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             return @call(square_call, redc, .{ &s, m, n0inv });
         }
 
+        // The same, written to r, like BigInt28's.
+        pub inline fn mulTo(r: *Fe, a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) void {
+            r.* = montMul(a, b, m, n0inv);
+        }
+
+        pub inline fn sqrTo(r: *Fe, a: *const Fe, m: *const Fe, n0inv: Limb) void {
+            r.* = montSqr(a, m, n0inv);
+        }
+
         pub fn mulFull(a: *const Fe, b: *const Fe) [2 * N]Limb {
             var r: [2 * N]Limb = @splat(0);
             for (0..N) |i| {
@@ -566,6 +593,10 @@ fn testCt(ct_: anytype) !void {
     try std.testing.expectEqual([2]Limb{ std.math.maxInt(Limb), std.math.maxInt(Limb) }, a);
     ct_.addIf(true, &a, &m);
     try std.testing.expectEqual([2]Limb{ 4, 1 }, a);
+
+    const table = [3][1]Limb{ .{0x1111_1111_2222_2222}, .{6 << 32}, .{0xaaaa_aaaa_bbbb_bbbb} };
+    try std.testing.expectEqual([1]Limb{0xaaaa_aaaa_2222_2222}, ct_.lookupHalves(&table, 0, 2));
+    try std.testing.expectEqual([1]Limb{0x0000_0006_bbbb_bbbb}, ct_.lookupHalves(&table, 2, 1));
 }
 
 test ct {

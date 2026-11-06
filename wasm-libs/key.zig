@@ -1,5 +1,6 @@
 const std = @import("std");
 const bi = @import("bigint.zig");
+const bi28 = @import("bigint28.zig");
 
 // -m0^-1 mod 2^64, for Montgomery reduction.
 // Each Newton step doubles the correct bits, so 6 steps cover all 64.
@@ -10,9 +11,12 @@ pub fn negInv64(m0: u64) u64 {
 }
 
 // RSA private key in CRT form, with its Montgomery constants precomputed.
-pub fn Key(comptime N: usize) type {
+// with28 adds what BigInt28 needs.
+pub fn Key(comptime N: usize, comptime with28: bool) type {
     const B = bi.BigInt(N);
     const Fe = B.Fe;
+    const T = bi28.BigInt28(N);
+    const Fe28 = if (with28) T.Fe else void;
     return struct {
         const Self = @This();
 
@@ -25,6 +29,10 @@ pub fn Key(comptime N: usize) type {
         p_rr: Fe, // R^2 mod p
         q_rr: Fe, // R^2 mod q
         qinv_mont: Fe, // q^-1 mod p, in Montgomery form
+        p28: Fe28,
+        q28: Fe28,
+        p_c28: Fe28, // for BigInt28.toMont()
+        q_c28: Fe28,
 
         pub fn fromHex(
             p_hex: []const u8,
@@ -77,6 +85,10 @@ pub fn Key(comptime N: usize) type {
                 .p_rr = p_rr,
                 .q_rr = B.rSquared(&q),
                 .qinv_mont = B.montMul(&qinv, &p_rr, &p, p_n0inv),
+                .p28 = if (with28) T.fromLimbs(&p) else {},
+                .q28 = if (with28) T.fromLimbs(&q) else {},
+                .p_c28 = if (with28) T.toMontConstant(&p) else {},
+                .q_c28 = if (with28) T.toMontConstant(&q) else {},
             };
         }
 
