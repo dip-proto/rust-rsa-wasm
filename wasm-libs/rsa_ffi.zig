@@ -7,12 +7,17 @@ const R2048 = rsa.Rsa(2048);
 const R3072 = rsa.Rsa(3072);
 const R4096 = rsa.Rsa(4096);
 
-// The signing key keeps its precomputed Montgomery constants, so the Rust side
-// owns the serialized key struct as an opaque, properly aligned byte buffer and
-// hands a pointer to it back on every sign call. Only this code interprets the
-// bytes, so the layout never crosses the FFI boundary as anything but a size.
+// Both keys keep their precomputed Montgomery constants, so the Rust side owns
+// each key struct as an opaque, properly aligned byte buffer and hands a pointer
+// to it back on every sign or verify call.
+// Only this code interprets the bytes, so the layout never crosses the FFI
+// boundary as anything but a size.
 fn keyBytes(comptime R: type) usize {
     return @sizeOf(R.Key);
+}
+
+fn publicKeyBytes(comptime R: type) usize {
+    return @sizeOf(R.PublicKey);
 }
 
 fn keyInit(
@@ -47,17 +52,16 @@ fn signWith(comptime R: type, sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, m
     @memcpy(sig[0..R.signature_len], &s);
 }
 
-fn verifyWith(
-    comptime R: type,
-    n: [*c]const u8,
-    n_len: usize,
-    e: u64,
-    msg: [*c]const u8,
-    msg_len: usize,
-    sig: [*c]const u8,
-    sig_len: usize,
-) i32 {
-    return if (R.verify(n[0..n_len], e, msg[0..msg_len], sig[0..sig_len])) 1 else 0;
+fn publicKeyInit(comptime R: type, out: [*c]u8, n: [*c]const u8, n_len: usize, e: u64) i32 {
+    const pk = R.PublicKey.fromBytes(n[0..n_len], e) catch return -1;
+    const pkp: *R.PublicKey = @ptrCast(@alignCast(out));
+    pkp.* = pk;
+    return 0;
+}
+
+fn verifyWith(comptime R: type, pk: [*c]const u8, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) i32 {
+    const pkp: *const R.PublicKey = @ptrCast(@alignCast(pk));
+    return if (R.verify(pkp, msg[0..msg_len], sig[0..sig_len])) 1 else 0;
 }
 
 // RSA-2048
@@ -71,8 +75,14 @@ export fn rsa2048_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]co
 export fn rsa2048_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
     signWith(R2048, sig, k, msg, msg_len);
 }
-export fn rsa2048_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
-    return verifyWith(R2048, n, n_len, e, msg, msg_len, sig, sig_len);
+export fn rsa2048_public_key_bytes() callconv(.c) usize {
+    return publicKeyBytes(R2048);
+}
+export fn rsa2048_public_key_init(out: [*c]u8, n: [*c]const u8, n_len: usize, e: u64) callconv(.c) i32 {
+    return publicKeyInit(R2048, out, n, n_len, e);
+}
+export fn rsa2048_verify(pk: [*c]const u8, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
+    return verifyWith(R2048, pk, msg, msg_len, sig, sig_len);
 }
 
 // RSA-3072
@@ -86,8 +96,14 @@ export fn rsa3072_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]co
 export fn rsa3072_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
     signWith(R3072, sig, k, msg, msg_len);
 }
-export fn rsa3072_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
-    return verifyWith(R3072, n, n_len, e, msg, msg_len, sig, sig_len);
+export fn rsa3072_public_key_bytes() callconv(.c) usize {
+    return publicKeyBytes(R3072);
+}
+export fn rsa3072_public_key_init(out: [*c]u8, n: [*c]const u8, n_len: usize, e: u64) callconv(.c) i32 {
+    return publicKeyInit(R3072, out, n, n_len, e);
+}
+export fn rsa3072_verify(pk: [*c]const u8, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
+    return verifyWith(R3072, pk, msg, msg_len, sig, sig_len);
 }
 
 // RSA-4096
@@ -101,6 +117,12 @@ export fn rsa4096_key_init(out: [*c]u8, p: [*c]const u8, p_len: usize, q: [*c]co
 export fn rsa4096_sign(sig: [*c]u8, k: [*c]const u8, msg: [*c]const u8, msg_len: usize) callconv(.c) void {
     signWith(R4096, sig, k, msg, msg_len);
 }
-export fn rsa4096_verify(n: [*c]const u8, n_len: usize, e: u64, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
-    return verifyWith(R4096, n, n_len, e, msg, msg_len, sig, sig_len);
+export fn rsa4096_public_key_bytes() callconv(.c) usize {
+    return publicKeyBytes(R4096);
+}
+export fn rsa4096_public_key_init(out: [*c]u8, n: [*c]const u8, n_len: usize, e: u64) callconv(.c) i32 {
+    return publicKeyInit(R4096, out, n, n_len, e);
+}
+export fn rsa4096_verify(pk: [*c]const u8, msg: [*c]const u8, msg_len: usize, sig: [*c]const u8, sig_len: usize) callconv(.c) i32 {
+    return verifyWith(R4096, pk, msg, msg_len, sig, sig_len);
 }

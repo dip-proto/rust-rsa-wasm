@@ -10,7 +10,8 @@
 //!
 //! A signing key is built from its CRT components (the two primes, both CRT
 //! exponents and the coefficient), exactly the values found in a PKCS#1 private
-//! key. Verification takes the public modulus and exponent.
+//! key. Verification takes the public modulus and exponent. Both keys compute
+//! their Montgomery constants once, when they are built.
 //!
 //! ```no_run
 //! use rsa_wasm_signatures::rsa2048::{SecretKey, PublicKey};
@@ -57,7 +58,8 @@ macro_rules! rsa_module {
     (
         $(#[$meta:meta])*
         $name:ident, $bits:literal, $siglen:literal, $primelen:literal,
-        $key_bytes:ident, $key_init:ident, $sign:ident, $verify:ident
+        $key_bytes:ident, $key_init:ident, $sign:ident,
+        $public_key_bytes:ident, $public_key_init:ident, $verify:ident
     ) => {
         $(#[$meta])*
         pub mod $name {
@@ -75,8 +77,10 @@ macro_rules! rsa_module {
                         qinv: *const u8, qinv_len: usize,
                     ) -> i32;
                     pub fn $sign(sig: *mut u8, key: *const u8, msg: *const u8, msg_len: usize);
+                    pub fn $public_key_bytes() -> usize;
+                    pub fn $public_key_init(out: *mut u8, n: *const u8, n_len: usize, e: u64) -> i32;
                     pub fn $verify(
-                        n: *const u8, n_len: usize, e: u64,
+                        key: *const u8,
                         msg: *const u8, msg_len: usize,
                         sig: *const u8, sig_len: usize,
                     ) -> i32;
@@ -165,24 +169,33 @@ macro_rules! rsa_module {
             }
 
             /// An RSA public key: the modulus `n` and the public exponent `e`.
-            #[derive(Clone, Debug, Eq, PartialEq)]
+            ///
+            /// Like [`SecretKey`], it computes its Montgomery constants once, when
+            /// the key is built, so [`PublicKey::verify`] doesn't redo that work on
+            /// every call.
+            #[derive(Clone, Eq, PartialEq)]
             pub struct PublicKey {
-                n: Vec<u8>,
-                e: u64,
+                words: Vec<u64>,
             }
 
             impl PublicKey {
                 /// Builds a public key from the modulus `n` as big-endian bytes and
                 /// the public exponent `e` (commonly `65537`).
                 ///
-                /// Returns [`Error::InvalidKey`] if `n` is empty, longer than
-                /// [`SIGNATURE_LEN`] bytes, or if `e` is zero.
+                /// Leading zero bytes are accepted. Returns [`Error::InvalidKey`] if
+                /// `n` is longer than [`SIGNATURE_LEN`] bytes or even (which includes
+                /// an empty `n`), or if `e` is even or below 3.
                 pub fn new(n: impl AsRef<[u8]>, e: u64) -> Result<Self, Error> {
                     let n = n.as_ref();
-                    if n.is_empty() || n.len() > SIGNATURE_LEN || e == 0 {
+                    let words_len = unsafe { zig::$public_key_bytes() }.div_ceil(8);
+                    let mut words = vec![0u64; words_len];
+                    let rc = unsafe {
+                        zig::$public_key_init(words.as_mut_ptr() as *mut u8, n.as_ptr(), n.len(), e)
+                    };
+                    if rc != 0 {
                         return Err(Error::InvalidKey);
                     }
-                    Ok(PublicKey { n: n.to_vec(), e })
+                    Ok(PublicKey { words })
                 }
 
                 /// Verifies a PKCS#1 v1.5 + SHA-256 signature over `msg`.
@@ -200,7 +213,7 @@ macro_rules! rsa_module {
                     }
                     let ok = unsafe {
                         zig::$verify(
-                            self.n.as_ptr(), self.n.len(), self.e,
+                            self.words.as_ptr() as *const u8,
                             msg.as_ptr(), msg.len(),
                             sig.as_ptr(), sig.len(),
                         )
@@ -212,6 +225,12 @@ macro_rules! rsa_module {
                     }
                 }
             }
+
+            impl core::fmt::Debug for PublicKey {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    f.debug_struct("PublicKey").finish_non_exhaustive()
+                }
+            }
         }
     };
 }
@@ -219,19 +238,22 @@ macro_rules! rsa_module {
 rsa_module!(
     /// RSA-2048 signing and verification.
     rsa2048, 2048, 256, 128,
-    rsa2048_key_bytes, rsa2048_key_init, rsa2048_sign, rsa2048_verify
+    rsa2048_key_bytes, rsa2048_key_init, rsa2048_sign,
+    rsa2048_public_key_bytes, rsa2048_public_key_init, rsa2048_verify
 );
 
 rsa_module!(
     /// RSA-3072 signing and verification.
     rsa3072, 3072, 384, 192,
-    rsa3072_key_bytes, rsa3072_key_init, rsa3072_sign, rsa3072_verify
+    rsa3072_key_bytes, rsa3072_key_init, rsa3072_sign,
+    rsa3072_public_key_bytes, rsa3072_public_key_init, rsa3072_verify
 );
 
 rsa_module!(
     /// RSA-4096 signing and verification.
     rsa4096, 4096, 512, 256,
-    rsa4096_key_bytes, rsa4096_key_init, rsa4096_sign, rsa4096_verify
+    rsa4096_key_bytes, rsa4096_key_init, rsa4096_sign,
+    rsa4096_public_key_bytes, rsa4096_public_key_init, rsa4096_verify
 );
 
 #[cfg(test)]

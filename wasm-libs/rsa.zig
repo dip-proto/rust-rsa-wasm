@@ -1,6 +1,6 @@
 const std = @import("std");
-const bi = @import("bigint.zig");
-const key = @import("key.zig");
+pub const bi = @import("bigint.zig");
+pub const key = @import("key.zig");
 
 // PKCS#1 v1.5 DigestInfo prefix for SHA-256.
 const sha256_prefix = [_]u8{
@@ -56,7 +56,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return B.addModNoMont(&thiR, &tlo, m);
         }
 
-        inline fn bitAt(exp: *const Fe, idx: usize) u1 {
+        fn bitAt(exp: *const Fe, idx: usize) u1 {
             return @truncate(exp[idx >> 6] >> @intCast(idx & 63));
         }
 
@@ -131,12 +131,12 @@ pub fn Rsa(comptime modulus_bits: usize) type {
 
         fn windowAt(exp: *const Fe, pos: usize) usize {
             const lo = exp[pos / 64];
-            const hi: u64 = if (pos / 64 + 1 < N) exp[pos / 64 + 1] else 0;
-            const bits = ((@as(u128, hi) << 64) | lo) >> @intCast(pos % 64);
+            const hi: u128 = if (pos / 64 + 1 < N) exp[pos / 64 + 1] else 0;
+            const bits = ((hi << 64) | lo) >> @intCast(pos % 64);
             return @intCast(bits & ((1 << CT_WINDOW) - 1));
         }
 
-        inline fn montOne(m: *const Fe, n0inv: u64, rr: *const Fe) Fe {
+        fn montOne(m: *const Fe, n0inv: u64, rr: *const Fe) Fe {
             return B.montMul(&B.one, rr, m, n0inv);
         }
 
@@ -165,7 +165,7 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             var s: [2 * N]u64 = qh;
             var carry: u128 = 0;
             for (0..N) |i| {
-                const t = @as(u128, s[i]) + sq[i] + carry;
+                const t = carry + s[i] + sq[i];
                 s[i] = @truncate(t);
                 carry = t >> 64;
             }
@@ -180,28 +180,36 @@ pub fn Rsa(comptime modulus_bits: usize) type {
             return M.toBytesBE(&s);
         }
 
-        // Not optimized: e is small, and only signing gets benchmarked.
-        pub fn verify(n_be: []const u8, e: u64, msg: []const u8, sig: []const u8) bool {
-            if (sig.len != K or n_be.len > K or e < 3 or e & 1 == 0) return false;
+        pub const PublicKey = struct {
+            n: [2 * N]u64,
+            e: u64,
+            n0inv: u64,
+            rr: [2 * N]u64,
 
-            const n = M.fromBytesBE(n_be);
-            if (n[0] & 1 == 0) return false; // a real RSA modulus is always odd
+            pub fn fromBytes(n_be: []const u8, e: u64) !PublicKey {
+                if (n_be.len > K or e < 3 or e & 1 == 0) return error.InvalidKey;
+                const n = M.fromBytesBE(n_be);
+                if (n[0] & 1 == 0) return error.InvalidKey; // a real RSA modulus is always odd
+                return .{ .n = n, .e = e, .n0inv = key.negInv64(n[0]), .rr = M.rSquared(&n) };
+            }
+        };
+
+        pub fn verify(pk: *const PublicKey, msg: []const u8, sig: []const u8) bool {
+            if (sig.len != K) return false;
+            const n = &pk.n;
             const s = M.fromBytesBE(sig);
-            if (M.geq(&s, &n)) return false;
+            if (M.geq(&s, n)) return false;
 
-            const n0inv = key.negInv64(n[0]);
-            const rr = M.rSquared(&n);
-
-            const base_mont = M.montMul(&s, &rr, &n, n0inv);
-            var result = M.montMul(&M.one, &rr, &n, n0inv);
-            var bit: isize = 63 - @as(isize, @clz(e));
+            const base_mont = M.montMul(&s, &pk.rr, n, pk.n0inv);
+            var result = base_mont;
+            var bit: isize = 62 - @as(isize, @clz(pk.e));
             while (bit >= 0) : (bit -= 1) {
-                result = M.montSqr(&result, &n, n0inv);
-                if ((e >> @intCast(bit)) & 1 == 1) {
-                    result = M.montMul(&result, &base_mont, &n, n0inv);
+                result = M.montSqr(&result, n, pk.n0inv);
+                if ((pk.e >> @intCast(bit)) & 1 == 1) {
+                    result = M.montMul(&result, &base_mont, n, pk.n0inv);
                 }
             }
-            const recovered = M.montMul(&result, &M.one, &n, n0inv); // back from Montgomery form
+            const recovered = M.montMul(&result, &M.one, n, pk.n0inv); // back from Montgomery form
 
             const em = encodeMessage(msg);
             var diff: u64 = 0;
@@ -228,25 +236,20 @@ fn expectReferenceVectors(comptime R: type, comptime d: type) !void {
     try std.testing.expectEqualSlices(u8, &expected, &sig);
 
     const n = M.toBytesBE(&bi.BigInt(N).mulFull(&k.p, &k.q));
-    try std.testing.expect(R.verify(&n, 65537, msg, &sig));
-    try std.testing.expect(!R.verify(&n, 65537, "hello rsa wasm benchmark messagf", &sig));
+    const pk = try R.PublicKey.fromBytes(&n, 65537);
+    try std.testing.expect(R.verify(&pk, msg, &sig));
+    try std.testing.expect(!R.verify(&pk, "hello rsa wasm benchmark messagf", &sig));
 
     // With e = 1, the padded message would pass as its own signature.
-    try std.testing.expect(!R.verify(&n, 1, msg, &M.toBytesBE(&R.encodeMessage(msg))));
+    try std.testing.expectError(error.InvalidKey, R.PublicKey.fromBytes(&n, 1));
 
     sig[K - 1] ^= 1;
-    try std.testing.expect(!R.verify(&n, 65537, msg, &sig));
+    try std.testing.expect(!R.verify(&pk, msg, &sig));
 }
 
-test "RSA-2048 matches the OpenSSL signature and verifies it" {
+test "signatures match OpenSSL and verify" {
     try expectReferenceVectors(Rsa2048, key.default2048);
-}
-
-test "RSA-3072 matches the OpenSSL signature and verifies it" {
     try expectReferenceVectors(Rsa3072, key.default3072);
-}
-
-test "RSA-4096 matches the OpenSSL signature and verifies it" {
     try expectReferenceVectors(Rsa4096, key.default4096);
 }
 

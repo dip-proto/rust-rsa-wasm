@@ -30,6 +30,8 @@ inline fn mul64Portable(a: Limb, b: Limb) [2]Limb {
     const hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
     return .{ lo, hi };
 }
+
+// Faster than std.math.mulWide with Cranelift
 pub inline fn mulWide(a: Limb, b: Limb) Wide {
     const r = mul64(a, b);
     return (@as(Wide, r[1]) << 64) | r[0];
@@ -61,7 +63,8 @@ const ct_protected = struct {
     }
 
     fn mask(on: bool) Limb {
-        return barrier(@as(Limb, 0) -% @intFromBool(on));
+        const bit: Limb = @intFromBool(on);
+        return barrier(0 -% bit);
     }
 
     pub fn geq(a: anytype, b: *const @TypeOf(a.*)) bool {
@@ -96,7 +99,9 @@ const ct_protected = struct {
         const V = @Vector(table[0].len, Limb);
         var r: V = @splat(0);
         for (table, 0..) |*entry, i| {
-            r |= @as(V, entry.*) & @as(V, @splat(mask(i == index)));
+            const e: V = entry.*;
+            const m: V = @splat(mask(i == index));
+            r |= e & m;
         }
         return r;
     }
@@ -116,7 +121,7 @@ const ct_unprotected = struct {
         if (top != 0 or geq(a, m)) _ = subWithBorrow(a, m);
     }
 
-    pub inline fn addIf(on: bool, a: anytype, m: *const @TypeOf(a.*)) void {
+    pub fn addIf(on: bool, a: anytype, m: *const @TypeOf(a.*)) void {
         if (on) {
             var carry: Wide = 0;
             inline for (0..a.len) |i| {
@@ -127,6 +132,78 @@ const ct_unprotected = struct {
         }
     }
 };
+
+// The sum of one column of products, as l + h * 2^64.
+// Low and high halves of the products go into separate sums, so neither can overflow.
+const ColumnSum = struct {
+    l: Wide = 0,
+    h: Wide = 0,
+
+    inline fn add(acc: *ColumnSum, x: Limb, y: Limb) void {
+        const p = mulWide(x, y);
+        acc.l += p & 0xffff_ffff_ffff_ffff;
+        acc.h += p >> 64;
+
+        // Keeps LLVM from moving the additions away from the multiply.
+        // When it does, Cranelift runs out of registers.
+        var l0: Limb = @truncate(acc.l);
+        var l1: Limb = @truncate(acc.l >> 64);
+        var h0: Limb = @truncate(acc.h);
+        var h1: Limb = @truncate(acc.h >> 64);
+        asm volatile (""
+            : [l0] "+r" (l0),
+              [l1] "+r" (l1),
+              [h0] "+r" (h0),
+              [h1] "+r" (h1),
+        );
+        acc.l = (@as(Wide, l1) << 64) | l0;
+        acc.h = (@as(Wide, h1) << 64) | h0;
+    }
+
+    fn merge(acc: *ColumnSum, x: ColumnSum) void {
+        acc.l += x.l;
+        acc.h += x.h;
+    }
+
+    fn addDoubled(acc: *ColumnSum, x: ColumnSum) void {
+        acc.l += x.l << 1;
+        acc.h += x.h << 1;
+    }
+
+    // In the low columns, adds the multiple of m that clears the column, and saves the multiplier in r.
+    // In the high ones, the column is a word of the result.
+    inline fn endColumn(acc: *ColumnSum, comptime k: usize, r: anytype, m: anytype, n0inv: Limb) void {
+        const n = r.len;
+        if (k < n) {
+            const lo: Limb = @truncate(acc.l);
+            const q = lo *% n0inv;
+            store(r, k, q);
+            acc.add(q, load(m, 0));
+            _ = acc.next();
+        } else {
+            store(r, k - n, acc.next());
+        }
+    }
+
+    // Returns the low word of the column, and carries the rest over to the next one.
+    inline fn next(acc: *ColumnSum) Limb {
+        const lo: Limb = @truncate(acc.l);
+        acc.* = .{ .l = (acc.l >> 64) + acc.h };
+        return lo;
+    }
+};
+
+// Volatile, so that LLVM loads each limb right where it's needed.
+// Otherwise, it loads them all upfront, and Cranelift has to spill them.
+inline fn load(p: anytype, comptime i: usize) Limb {
+    const src: *const volatile Limb = &p[i];
+    return src.*;
+}
+
+inline fn store(p: anytype, comptime i: usize, v: Limb) void {
+    const dst: *volatile Limb = &p[i];
+    dst.* = v;
+}
 
 // Fixed-size math on N 64-bit limbs, lowest limb first.
 // Signing uses it at half the modulus size (one CRT prime).
@@ -142,7 +219,11 @@ pub fn PublicBigInt(comptime N: usize) type {
 
 fn BigIntWith(comptime N: usize, comptime ct_: type) type {
     return struct {
-        // On WebAssembly, constant-time squaring isn't inlined.
+        // Working by columns is faster natively and with wasm wide arithmetic, but much slower on Cranelift without it.
+        // Above 32 limbs, the unrolled code gets too big, so montSqr() only squares by columns, and reduces by rows.
+        const by_columns = (!is_wasm or has_wide_arithmetic) and N <= 32;
+
+        // On wasm without wide arithmetic, constant-time squaring isn't inlined.
         // Otherwise, the exponentiation loop gets huge and slow.
         const square_call: std.builtin.CallModifier = if (is_wasm and ct_ == ct_protected) .never_inline else .auto;
 
@@ -195,11 +276,11 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             return ct_.geq(a, b);
         }
 
-        pub inline fn condSub(a: *Fe, m: *const Fe) void {
+        pub fn condSub(a: *Fe, m: *const Fe) void {
             ct_.reduceOnce(a, 0, m);
         }
 
-        pub inline fn addModNoMont(a: *const Fe, b: *const Fe, m: *const Fe) Fe {
+        pub fn addModNoMont(a: *const Fe, b: *const Fe, m: *const Fe) Fe {
             var r: Fe = undefined;
             var carry: Limb = 0;
             inline for (0..N) |i| {
@@ -212,7 +293,7 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
             return r;
         }
 
-        pub inline fn subMod(a: *const Fe, b: *const Fe, m: *const Fe) Fe {
+        pub fn subMod(a: *const Fe, b: *const Fe, m: *const Fe) Fe {
             var r: Fe = undefined;
             var borrow: Wide = 0;
             inline for (0..N) |i| {
@@ -225,7 +306,13 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
         }
 
         // a * b * R^-1 mod m, with a and b both below m.
-        pub fn montMul(a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) Fe {
+        pub inline fn montMul(a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) Fe {
+            if (by_columns) return montMulColumns(a, b, m, n0inv);
+            return montMulRows(a, b, m, n0inv);
+        }
+
+        // montMul() one row at a time (CIOS).
+        fn montMulRows(a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) Fe {
             @setEvalBranchQuota(20000);
             var t: [N + 1]Limb = @splat(0);
             var tn: Limb = 0; // top limb of t
@@ -248,13 +335,119 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
                     t[j - 1] = @truncate(prod);
                     c2 = @intCast(prod >> 64);
                 }
-                const s1 = @as(Wide, @as(Limb, @truncate(s0))) + c2;
+                const low: Limb = @truncate(s0);
+                const s1 = @as(Wide, low) + c2;
                 t[N - 1] = @truncate(s1);
-                tn = tcarry + @as(Limb, @intCast(s1 >> 64));
+                const c3: Limb = @intCast(s1 >> 64);
+                tn = tcarry + c3;
             }
             var r: Fe = t[0..N].*;
             // The result is below 2m, so one subtraction is enough.
             ct_.reduceOnce(&r, tn, m);
+            return r;
+        }
+
+        // montMul() one column at a time, reducing as it goes (FIPS).
+        // a*b and q*m get their own sums, so the CPU can work on both at once.
+        fn montMulColumns(a: *const Fe, b: *const Fe, m: *const Fe, n0inv: Limb) Fe {
+            @setEvalBranchQuota(100000);
+            var r: Fe = undefined; // q in the low columns, then the result
+            var acc: ColumnSum = .{};
+            inline for (0..2 * N - 1) |k| {
+                const lo = if (k < N) 0 else k - N + 1;
+                var x: ColumnSum = .{};
+                inline for (lo..@min(k + 1, N)) |i| x.add(load(a, i), load(b, k - i));
+                inline for (lo..@min(k, N)) |j| acc.add(load(&r, j), load(m, k - j));
+                acc.merge(x);
+                acc.endColumn(k, &r, m, n0inv);
+            }
+            r[N - 1] = acc.next();
+            ct_.reduceOnce(&r, @truncate(acc.l), m);
+            return r;
+        }
+
+        // montMulColumns(a, a), computing each cross product once and doubling it.
+        fn montSqrColumns(a: *const Fe, m: *const Fe, n0inv: Limb) Fe {
+            @setEvalBranchQuota(100000);
+            var r: Fe = undefined;
+            var acc: ColumnSum = .{};
+            inline for (0..2 * N - 1) |k| {
+                const lo = if (k < N) 0 else k - N + 1;
+                var x: ColumnSum = .{};
+                inline for (lo..(k + 1) / 2) |i| x.add(load(a, i), load(a, k - i));
+                acc.addDoubled(x);
+
+                // Reuse x for half of the other products, to keep both chains of additions short.
+                x = .{};
+                if (k % 2 == 0) {
+                    const h = load(a, k / 2);
+                    x.add(h, h);
+                }
+                inline for (lo..@min(k, N)) |j| {
+                    if (j % 2 == 1) x.add(load(&r, j), load(m, k - j)) else acc.add(load(&r, j), load(m, k - j));
+                }
+                acc.merge(x);
+                acc.endColumn(k, &r, m, n0inv);
+            }
+            r[N - 1] = acc.next();
+            ct_.reduceOnce(&r, @truncate(acc.l), m);
+            return r;
+        }
+
+        // a^2 into t, one column at a time.
+        fn sqrColumns(a: *const Fe, t: *[2 * N + 1]Limb) void {
+            @setEvalBranchQuota(100000);
+            var cross: ColumnSum = .{}; // cross products, not doubled yet
+            var acc: ColumnSum = .{};
+            var prev: Limb = 0; // the previous word of cross, whose top bit moves up when doubling
+            inline for (0..2 * N - 1) |k| {
+                inline for (if (k >= N) k - N + 1 else 0..(k + 1) / 2) |i| cross.add(load(a, i), load(a, k - i));
+                const c = cross.next();
+                acc.l += (c << 1) | (prev >> 63);
+                prev = c;
+                if (k % 2 == 0) {
+                    const h = load(a, k / 2);
+                    acc.add(h, h);
+                }
+                store(t, k, acc.next());
+            }
+            const c = cross.next();
+            acc.l += (c << 1) | (prev >> 63);
+            store(t, 2 * N - 1, acc.next());
+            t[2 * N] = 0;
+        }
+
+        // t * R^-1 mod m, for t below m*R. It overwrites t.
+        // It does two rows per pass, so each limb of t gets loaded and stored half as often.
+        fn redcPairs(t: *[2 * N + 1]Limb, m: *const Fe, n0inv: Limb) Fe {
+            comptime std.debug.assert(N % 2 == 0);
+            var top: Limb = 0; // carry into t[i + N]
+            var i: usize = 0;
+            while (i < N) : (i += 2) {
+                const w = t[i..][0 .. N + 2];
+                const q0 = load(w, 0) *% n0inv;
+                var c0: Limb = @truncate((mulWide(q0, m[0]) + load(w, 0)) >> 64);
+                const p1 = mulWide(q0, m[1]) + load(w, 1) + c0;
+                c0 = @truncate(p1 >> 64);
+                const t1: Limb = @truncate(p1);
+                const q1 = t1 *% n0inv;
+                var c1: Limb = @truncate((mulWide(q1, m[0]) + t1) >> 64);
+                inline for (2..N) |j| {
+                    const s = mulWide(q0, m[j]) + load(w, j) + c0;
+                    c0 = @truncate(s >> 64);
+                    const r = mulWide(q1, m[j - 1]) + (s & 0xffff_ffff_ffff_ffff) + c1;
+                    c1 = @truncate(r >> 64);
+                    store(w, j, @truncate(r));
+                }
+                const s = @as(Wide, load(w, N)) + c0 + top;
+                const r = mulWide(q1, m[N - 1]) + (s & 0xffff_ffff_ffff_ffff) + c1;
+                store(w, N, @truncate(r));
+                const u = load(w, N + 1) + (s >> 64) + (r >> 64);
+                store(w, N + 1, @truncate(u));
+                top = @truncate(u >> 64);
+            }
+            var r: Fe = t[N .. 2 * N].*;
+            ct_.reduceOnce(&r, top, m);
             return r;
         }
 
@@ -328,6 +521,12 @@ fn BigIntWith(comptime N: usize, comptime ct_: type) type {
         }
 
         pub inline fn montSqr(a: *const Fe, m: *const Fe, n0inv: Limb) Fe {
+            if (by_columns) return montSqrColumns(a, m, n0inv);
+            if ((!is_wasm or has_wide_arithmetic) and N % 2 == 0) {
+                var t: [2 * N + 1]Limb = undefined;
+                sqrColumns(a, &t);
+                return redcPairs(&t, m, n0inv);
+            }
             const s = @call(square_call, sqrFull, .{a});
             return @call(square_call, redc, .{ &s, m, n0inv });
         }
@@ -382,7 +581,7 @@ test "mul64Portable matches the 128-bit product" {
     values[0..4].* = .{ 0, 1, 0xffff_ffff, std.math.maxInt(Limb) };
     for (values) |a| {
         for (values) |b| {
-            const w = @as(Wide, a) * b;
+            const w = std.math.mulWide(Limb, a, b);
             try std.testing.expectEqual([2]Limb{ @truncate(w), @intCast(w >> 64) }, mul64Portable(a, b));
         }
     }

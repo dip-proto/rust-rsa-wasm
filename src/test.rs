@@ -108,4 +108,8 @@ fn rejects_bad_public_key() {
         Err(Error::InvalidKey)
     );
     assert_eq!(PublicKey::new(vec![1u8; 32], 0), Err(Error::InvalidKey));
+    // With e = 1, the padded message would pass as its own signature.
+    assert_eq!(PublicKey::new(vec![1u8; 32], 1), Err(Error::InvalidKey));
+    assert_eq!(PublicKey::new(vec![1u8; 32], 65536), Err(Error::InvalidKey));
+    assert_eq!(PublicKey::new(vec![2u8; 32], 65537), Err(Error::InvalidKey));
 }
