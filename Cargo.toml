@@ -13,9 +13,8 @@ categories = ["cryptography", "wasm"]
 
 [features]
 default = []
-# Link the archive built without the wasm wide-arithmetic proposal, for runtimes
-# that do not implement it. Signing is ~2.4x slower but the module validates
-# everywhere; no `-W wide-arithmetic=y` needed on the runtime side.
+# Link the archive built without the wasm wide-arithmetic proposal, for runtimes that do not implement it.
+# Signing is ~2.4x slower but the module works everywhere.
 no-wide-arithmetic = []
 
 [dev-dependencies]
