@@ -24,19 +24,16 @@ macro_rules! vector_test {
             )
             .unwrap();
 
-            // Signing reproduces the OpenSSL reference signature byte for byte.
             let sig = sk.sign(MSG);
-            assert_eq!(sig.len(), SIGNATURE_LEN);
+            // OpenSSL reference signature.
             assert_eq!(&sig[..], unhex($sig).as_slice(), "signature mismatch");
 
             let pk = PublicKey::new(unhex($n), 65537).unwrap();
             assert_eq!(pk.verify(MSG, sig), Ok(()));
 
-            // A freshly produced signature over a different message round-trips.
             let sig2 = sk.sign(b"a different message entirely");
             assert_eq!(pk.verify(b"a different message entirely", sig2), Ok(()));
 
-            // Tampering with the message, the signature, or its length is rejected.
             assert_eq!(
                 pk.verify(b"hello rsa wasm benchmark messagf", sig),
                 Err(Error::VerificationFailed)
@@ -102,14 +99,19 @@ fn rejects_oversized_component() {
 #[test]
 fn rejects_bad_public_key() {
     use crate::rsa2048::{PublicKey, SIGNATURE_LEN};
-    assert_eq!(PublicKey::new([], 65537), Err(Error::InvalidKey));
-    assert_eq!(
-        PublicKey::new(vec![1u8; SIGNATURE_LEN + 1], 65537),
-        Err(Error::InvalidKey)
-    );
-    assert_eq!(PublicKey::new(vec![1u8; 32], 0), Err(Error::InvalidKey));
-    // With e = 1, the padded message would pass as its own signature.
-    assert_eq!(PublicKey::new(vec![1u8; 32], 1), Err(Error::InvalidKey));
-    assert_eq!(PublicKey::new(vec![1u8; 32], 65536), Err(Error::InvalidKey));
-    assert_eq!(PublicKey::new(vec![2u8; 32], 65537), Err(Error::InvalidKey));
+    for (case, modulus, exponent) in [
+        ("empty modulus", vec![], 65537),
+        ("oversized modulus", vec![1u8; SIGNATURE_LEN + 1], 65537),
+        ("zero exponent", vec![1u8; 32], 0),
+        // With e = 1, the padded message would pass as its own signature.
+        ("unit exponent", vec![1u8; 32], 1),
+        ("even exponent", vec![1u8; 32], 65536),
+        ("even modulus", vec![2u8; 32], 65537),
+    ] {
+        assert_eq!(
+            PublicKey::new(modulus, exponent),
+            Err(Error::InvalidKey),
+            "{case}"
+        );
+    }
 }

@@ -2,16 +2,11 @@
 //!
 //! Fast RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly/WASI.
 //!
-//! The heavy lifting — CRT modular exponentiation with Montgomery arithmetic — is
-//! done by a Zig implementation shipped as a precompiled static library, so the
-//! crate has no runtime dependencies and signs as fast as the standalone Zig
-//! signer it was lifted from. Three modulus sizes are supported, one module each:
-//! [`rsa2048`], [`rsa3072`] and [`rsa4096`].
+//! Use [`rsa2048`], [`rsa3072`], or [`rsa4096`] for your key size.
+//! The crate ships a compiled Zig library, so you don't need Zig to build it.
 //!
-//! A signing key is built from its CRT components (the two primes, both CRT
-//! exponents and the coefficient), exactly the values found in a PKCS#1 private
-//! key. Verification takes the public modulus and exponent. Both keys compute
-//! their Montgomery constants once, when they are built.
+//! Build a signing key from its CRT components, or a public key from its modulus and exponent.
+//! Reuse keys to avoid repeating setup.
 //!
 //! ```no_run
 //! use rsa_wasm_signatures::rsa2048::{SecretKey, PublicKey};
@@ -26,9 +21,9 @@
 //! # }
 //! ```
 //!
-//! > This crate targets WASI, not native or browser environments. The signing
-//! > code relies on the WebAssembly wide-arithmetic proposal, so the runtime must
-//! > enable it (for example `wasmtime -W wide-arithmetic=y`).
+//! This crate targets WASI, not native apps or browsers.
+//! By default, the runtime must enable WebAssembly wide-arithmetic (for example, `wasmtime -W wide-arithmetic=y`).
+//! Use the `no-wide-arithmetic` feature if your runtime doesn't support it.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -39,7 +34,7 @@ use core::fmt::{self, Display};
 pub enum Error {
     /// A key component did not fit the modulus size, or the public key was malformed.
     InvalidKey,
-    /// The signature did not verify against the message and public key.
+    /// The signature does not match the message and public key.
     VerificationFailed,
 }
 
@@ -89,28 +84,25 @@ macro_rules! rsa_module {
 
             /// Modulus size in bits.
             pub const MODULUS_BITS: usize = $bits;
-            /// Signature length in bytes (the modulus size in bytes).
+            /// Signature length in bytes.
             pub const SIGNATURE_LEN: usize = $siglen;
             /// Maximum length in bytes of each CRT key component (`p`, `q`, `dp`, `dq`, `qinv`).
             pub const COMPONENT_LEN: usize = $primelen;
 
-            /// An RSA private key in CRT form, ready to sign.
-            ///
-            /// The Montgomery constants derived from the key are computed once, when
-            /// the key is built, so repeated [`SecretKey::sign`] calls only pay for
-            /// the modular exponentiation itself.
+            /// An RSA signing key.
             #[derive(Clone)]
             pub struct SecretKey {
                 words: Vec<u64>,
             }
 
             impl SecretKey {
-                /// Builds a signing key from its CRT components as big-endian bytes:
-                /// the primes `p` and `q`, the CRT exponents `dp = d mod (p-1)` and
-                /// `dq = d mod (q-1)`, and the coefficient `qinv = q^-1 mod p`.
+                /// Builds a signing key from big-endian CRT components.
                 ///
-                /// Leading zero bytes are accepted. Returns [`Error::InvalidKey`] if
-                /// any component is longer than [`COMPONENT_LEN`].
+                /// Pass the primes `p` and `q`, exponents `dp = d mod (p-1)` and `dq = d mod (q-1)`,
+                /// and coefficient `qinv = q^-1 mod p`.
+                ///
+                /// Leading zero bytes are accepted, but count toward the [`COMPONENT_LEN`] limit.
+                /// Returns [`Error::InvalidKey`] if any component is too long.
                 pub fn from_components(
                     p: impl AsRef<[u8]>,
                     q: impl AsRef<[u8]>,
@@ -143,10 +135,9 @@ macro_rules! rsa_module {
                     Ok(SecretKey { words })
                 }
 
-                /// Signs a message with PKCS#1 v1.5 padding over its SHA-256 digest.
+                /// Hashes a message with SHA-256 and signs it with PKCS#1 v1.5 padding.
                 ///
-                /// The message is hashed internally; the result is a
-                /// [`SIGNATURE_LEN`]-byte big-endian signature.
+                /// Returns the signature as big-endian bytes.
                 pub fn sign(&self, msg: impl AsRef<[u8]>) -> [u8; SIGNATURE_LEN] {
                     let msg = msg.as_ref();
                     let mut sig = [0u8; SIGNATURE_LEN];
@@ -168,23 +159,17 @@ macro_rules! rsa_module {
                 }
             }
 
-            /// An RSA public key: the modulus `n` and the public exponent `e`.
-            ///
-            /// Like [`SecretKey`], it computes its Montgomery constants once, when
-            /// the key is built, so [`PublicKey::verify`] doesn't redo that work on
-            /// every call.
+            /// An RSA key for checking signatures.
             #[derive(Clone, Eq, PartialEq)]
             pub struct PublicKey {
                 words: Vec<u64>,
             }
 
             impl PublicKey {
-                /// Builds a public key from the modulus `n` as big-endian bytes and
-                /// the public exponent `e` (commonly `65537`).
+                /// Builds a public key from big-endian modulus bytes `n` and an exponent `e` (usually `65537`).
                 ///
-                /// Leading zero bytes are accepted. Returns [`Error::InvalidKey`] if
-                /// `n` is longer than [`SIGNATURE_LEN`] bytes or even (which includes
-                /// an empty `n`), or if `e` is even or below 3.
+                /// Leading zero bytes are accepted, but count toward the [`SIGNATURE_LEN`] limit.
+                /// Returns [`Error::InvalidKey`] if `n` is too long, empty, or even, or if `e` is even or below 3.
                 pub fn new(n: impl AsRef<[u8]>, e: u64) -> Result<Self, Error> {
                     let n = n.as_ref();
                     let words_len = unsafe { zig::$public_key_bytes() }.div_ceil(8);
@@ -198,10 +183,9 @@ macro_rules! rsa_module {
                     Ok(PublicKey { words })
                 }
 
-                /// Verifies a PKCS#1 v1.5 + SHA-256 signature over `msg`.
+                /// Checks a PKCS#1 v1.5 signature with SHA-256 against `msg`.
                 ///
-                /// Returns `Ok(())` if the signature is valid, or
-                /// [`Error::VerificationFailed`] otherwise.
+                /// Returns [`Error::VerificationFailed`] if the signature is invalid.
                 pub fn verify(
                     &self,
                     msg: impl AsRef<[u8]>,
