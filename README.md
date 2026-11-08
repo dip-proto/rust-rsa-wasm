@@ -2,10 +2,9 @@
 
 The fastest implementation of RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly.
 
-> This crate is not native or browser builds.
-> By default, the inner loop uses the WebAssembly wide-arithmetic proposal, so
-> you'll need to enable it in your runtime, for example `wasmtime -W wide-arithmetic=y`.
-> Without it, the module won't even validate.
+> This crate targets WASI, not native apps or browsers.
+> The default build needs WebAssembly wide-arithmetic.
+> Current Wasmtime versions enable it by default, so no extra flag is needed.
 >
 > If your runtime doesn't support the proposal, enable the
 > [`no-wide-arithmetic`](#running-on-runtimes-without-wide-arithmetic) feature.

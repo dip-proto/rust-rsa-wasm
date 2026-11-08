@@ -22,7 +22,7 @@
 //! ```
 //!
 //! This crate targets WASI, not native apps or browsers.
-//! By default, the runtime must enable WebAssembly wide-arithmetic (for example, `wasmtime -W wide-arithmetic=y`).
+//! The default build needs WebAssembly wide-arithmetic.
 //! Use the `no-wide-arithmetic` feature if your runtime doesn't support it.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
