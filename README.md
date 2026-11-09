@@ -2,7 +2,8 @@
 
 The fastest implementation of RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly.
 
-> This crate targets WASI, not native apps or browsers.
+> This crate targets WebAssembly, either WASI or freestanding (`wasm32-unknown-unknown`).
+>
 > The default build needs WebAssembly wide-arithmetic.
 > Current Wasmtime versions enable it by default, so no extra flag is needed.
 >
@@ -33,6 +34,8 @@ The default archive uses the WebAssembly wide-arithmetic proposal, so it won't
 validate if your runtime doesn't support it.
 
 Older runtimes, or those that take longer to adopt new proposals, don't implement it yet.
+
+Node, Deno and Bun don't enable it either, so you'll need this feature if you load the module from JavaScript.
 
 If you're using one of those, turn on the `no-wide-arithmetic` feature:
 

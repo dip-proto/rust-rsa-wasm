@@ -1,6 +1,6 @@
 //! # rsa-wasm-signatures
 //!
-//! Fast RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly/WASI.
+//! Fast RSA PKCS#1 v1.5 signatures over SHA-256 for WebAssembly.
 //!
 //! Use [`rsa2048`], [`rsa3072`], or [`rsa4096`] for your key size.
 //! The crate ships a compiled Zig library, so you don't need Zig to build it.
@@ -21,9 +21,10 @@
 //! # }
 //! ```
 //!
-//! This crate targets WASI, not native apps or browsers.
+//! This crate targets WebAssembly, either WASI or freestanding (`wasm32-unknown-unknown`).
 //! The default build needs WebAssembly wide-arithmetic.
 //! Use the `no-wide-arithmetic` feature if your runtime doesn't support it.
+//! Node, Deno and Bun don't enable it, so modules loaded from JavaScript need that feature.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 

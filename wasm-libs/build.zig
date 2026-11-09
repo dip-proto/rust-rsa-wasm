@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     // If -Dwide-arithmetic and -Dcpu disagree, the build fails.
     const wide_option = b.option(bool, "wide-arithmetic", "Use the wasm wide-arithmetic feature (default true; set false for old runtimes)");
     const default_query = std.Target.Query.parse(.{
-        .arch_os_abi = "wasm32-wasi",
+        .arch_os_abi = "wasm32-freestanding",
         .cpu_features = if (wide_option orelse true) "lime1+simd128+wide_arithmetic" else "lime1+simd128",
     }) catch unreachable;
     const target = b.standardTargetOptions(.{ .default_target = default_query });
